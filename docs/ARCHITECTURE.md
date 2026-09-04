@@ -12,7 +12,9 @@ flowchart TB
     subgraph Mac[One Mac]
       P[Read-only probes] --> O[Observation snapshot]
       L[Random local machine ID] --> O
-      UI[Device Sync UI] --> P
+      UI[Full Device Sync app] --> P
+      MB[Menu-bar command center] --> P
+      MB --> UI
     end
 
     O -->|atomic JSON| F[(Shared fleet folder)]
@@ -42,6 +44,15 @@ flowchart TB
 | Claude and OMP linked config | `~/harness-sync` |
 | AI continuity databases | ai-continuum local storage |
 | Durable human/agent context | BrainVault/StarkBrain and repository docs |
+
+## Native surfaces
+
+The menu bar and full window are two views over one in-process `FleetStore`.
+The menu bar owns quick posture, counts, freshness, and local scan initiation.
+Fleet inspection, baseline changes, bootstrap decisions, and every Doctor
+repair remain in the singleton full window. Opening Fleet or Doctor from the
+menu bar updates shared navigation before activating that window, so there is
+no second dashboard or divergent repair state.
 
 ## Failure semantics
 

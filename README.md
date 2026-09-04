@@ -4,13 +4,23 @@ Device Sync is a native macOS fleet dashboard for Patrick's personal tooling.
 It inventories every Mac, compares observed versions and theme fingerprints to
 one explicit baseline, and turns drift into guarded repair or a clear decision.
 
+The installed app has two native surfaces backed by the same live state:
+
+- A menu-bar command center for fleet posture, scan freshness, counts, and a
+  one-click scan of this Mac.
+- A singleton full app for machine evidence, bootstrap planning, settings, and
+  Doctor's guarded repair workflow. Menu-bar repair requests always open the
+  full Doctor; repairs never execute inside the popover.
+
 ```mermaid
 flowchart LR
     A[Reference Mac] -->|explicit baseline| M[fleet-manifest.json]
     B[Each Mac] -->|redacted snapshot| S[machines/*.json]
     M --> D[Drift engine]
     S --> D
-    D --> U[SwiftUI fleet dashboard]
+    D --> U[Full SwiftUI app]
+    D --> MB[Menu-bar command center]
+    MB -->|open evidence| U
     U -->|explicit repair| G[Doctor safety gate]
     G -->|approved local action| I[Product-owned installers]
     U -->|orchestrates| H[harness-sync]

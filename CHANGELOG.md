@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 — 2026-09-04
+
+- Added a native menu-bar command center alongside the singleton full app,
+  with live fleet posture, machine and attention counts, and scan freshness.
+- Added one-click local scanning plus direct Fleet and Doctor routing while
+  keeping repair review, confirmation, and proof in the full Doctor window.
+- Made navigation and menu status share the same observable state, and made a
+  failed refresh invalidate an old green posture instead of hiding stale truth.
+
 ## 0.1.2 — 2026-09-04
 
 - Added Doctor: a native diagnosis and guarded-repair surface for local fleet

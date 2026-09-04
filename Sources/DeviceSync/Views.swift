@@ -1,26 +1,8 @@
 import SwiftUI
 
-private enum AppSection: String, CaseIterable, Identifiable {
-    case fleet = "Fleet"
-    case doctor = "Doctor"
-    case bootstrap = "Bootstrap"
-    case settings = "Settings"
-
-    var id: String { rawValue }
-
-    var symbol: String {
-        switch self {
-        case .fleet: "macbook.and.iphone"
-        case .doctor: "stethoscope"
-        case .bootstrap: "sparkles.rectangle.stack"
-        case .settings: "gearshape"
-        }
-    }
-}
-
 struct RootView: View {
     @Bindable var store: FleetStore
-    @State private var section: AppSection = .fleet
+    @Bindable var navigation: AppNavigation
 
     var body: some View {
         NavigationSplitView {
@@ -28,10 +10,10 @@ struct RootView: View {
         } detail: {
             ZStack {
                 DSTheme.canvas.ignoresSafeArea()
-                switch section {
+                switch navigation.section {
                 case .fleet:
                     FleetView(store: store) {
-                        section = .doctor
+                        navigation.open(.doctor)
                     }
                 case .doctor:
                     DoctorView(store: store)
@@ -56,7 +38,7 @@ struct RootView: View {
         VStack(spacing: 0) {
             brand
 
-            List(selection: $section) {
+            List(selection: $navigation.section) {
                 Section("CONTROL PLANE") {
                     ForEach(AppSection.allCases) { item in
                         Label(item.rawValue, systemImage: item.symbol)
@@ -67,7 +49,7 @@ struct RootView: View {
                 Section("MACHINES") {
                     ForEach(store.filteredAssessments) { assessment in
                         Button {
-                            section = .fleet
+                            navigation.open(.fleet)
                             store.selectedMachineID = assessment.snapshot.machineID
                         } label: {
                             MachineSidebarRow(

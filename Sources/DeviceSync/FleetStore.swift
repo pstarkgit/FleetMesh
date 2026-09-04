@@ -20,6 +20,8 @@ final class FleetStore {
     var selectedMachineID: String?
     var searchText = ""
 
+    private var hasStarted = false
+
     private let localRepository: LocalStateRepository
     private let inventory: any InventoryCapturing
     private let driftEngine: DriftEngine
@@ -68,6 +70,7 @@ final class FleetStore {
     }
 
     var fleetVerdict: FleetVerdict {
+        if lastError != nil { return .unknown }
         if !issues.isEmpty { return .unknown }
         if assessments.contains(where: { $0.verdict == .critical }) { return .critical }
         if assessments.contains(where: { $0.verdict == .attention }) { return .attention }
@@ -79,7 +82,20 @@ final class FleetStore {
         assessments.reduce(0) { $0 + $1.attentionCount } + issues.count
     }
 
+    var menuBarSummary: MenuBarSummary {
+        MenuBarSummary(
+            verdict: fleetVerdict,
+            machineCount: assessments.count,
+            attentionCount: fleetAttentionCount,
+            lastScanAt: lastRefreshAt,
+            isScanning: isRefreshing || isDoctorRunning,
+            errorMessage: lastError
+        )
+    }
+
     func start() async {
+        guard !hasStarted else { return }
+        hasStarted = true
         await refresh()
     }
 
