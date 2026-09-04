@@ -1,10 +1,11 @@
 import AppKit
+import Observation
 import SwiftUI
 
 @main
 struct DeviceSyncApp: App {
-    @State private var store = FleetStore()
-    @State private var navigation = AppNavigation()
+    @NSApplicationDelegateAdaptor(DeviceSyncAppDelegate.self) private var appDelegate
+    @State private var appState = DeviceSyncAppState.shared
 
     init() {
         // Device Sync 0.1 uses a deliberately light evidence canvas. Pin the
@@ -30,30 +31,22 @@ struct DeviceSyncApp: App {
 
     var body: some Scene {
         Window("Device Sync", id: DeviceSyncWindow.main) {
-            RootView(store: store, navigation: navigation)
+            RootView(store: appState.store, navigation: appState.navigation)
                 .frame(minWidth: 1040, minHeight: 720)
                 .preferredColorScheme(.light)
                 .background(AquaWindowAppearance())
-                .task { await store.start() }
+                .background(DeviceSyncWindowRegistrar(appState: appState))
+                .task { await appState.store.start() }
         }
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Refresh Fleet") {
-                    Task { await store.refresh() }
+                    Task { await appState.store.refresh() }
                 }
                 .keyboardShortcut("r", modifiers: .command)
             }
         }
-
-        MenuBarExtra {
-            DeviceSyncMenuBarScene(store: store, navigation: navigation)
-        } label: {
-            let summary = store.menuBarSummary
-            Image(systemName: summary.statusSymbol)
-                .accessibilityLabel("Device Sync — \(summary.headline)")
-        }
-        .menuBarExtraStyle(.window)
     }
 
     private static func runHeadless(snapshotOnly: Bool, adoptBaseline: Bool) -> Never {
@@ -98,30 +91,45 @@ struct DeviceSyncApp: App {
     }
 }
 
-private enum DeviceSyncWindow {
+enum DeviceSyncWindow {
     static let main = "main"
 }
 
-private struct DeviceSyncMenuBarScene: View {
-    @Bindable var store: FleetStore
-    @Bindable var navigation: AppNavigation
-    @Environment(\.openWindow) private var openWindow
+@MainActor
+@Observable
+final class DeviceSyncAppState {
+    static let shared = DeviceSyncAppState()
 
-    var body: some View {
-        DeviceSyncMenuBarView(
+    let store: FleetStore
+    let navigation: AppNavigation
+
+    private var statusItemController: DeviceSyncStatusItemController?
+    private var openMainWindow: (() -> Void)?
+
+    private init() {
+        store = FleetStore()
+        navigation = AppNavigation()
+    }
+
+    func installStatusItem() {
+        guard statusItemController == nil else { return }
+        statusItemController = DeviceSyncStatusItemController(
             store: store,
-            openSection: show,
-            quit: { NSApp.terminate(nil) }
+            openSection: { [weak self] section in self?.show(section) }
         )
     }
 
-    private func show(_ section: AppSection) {
+    func registerWindowOpener(_ opener: @escaping () -> Void) {
+        openMainWindow = opener
+    }
+
+    func show(_ section: AppSection) {
         navigation.open(section)
-        openWindow(id: DeviceSyncWindow.main)
+        openMainWindow?()
         NSApp.activate(ignoringOtherApps: true)
 
-        // `openWindow` is scheduled by SwiftUI. Bring the singleton forward on
-        // the next run loop so this also restores a minimized existing window.
+        // Opening a SwiftUI scene is asynchronous. Bring the singleton forward
+        // on the next run loop and restore it if it was minimized.
         DispatchQueue.main.async {
             guard let window = NSApp.windows.first(where: { $0.title == "Device Sync" }) else {
                 return
@@ -130,6 +138,28 @@ private struct DeviceSyncMenuBarScene: View {
             window.makeKeyAndOrderFront(nil)
         }
     }
+}
+
+@MainActor
+private final class DeviceSyncAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DeviceSyncAppState.shared.installStatusItem()
+    }
+}
+
+private struct DeviceSyncWindowRegistrar: View {
+    let appState: DeviceSyncAppState
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear {
+                appState.registerWindowOpener {
+                    openWindow(id: DeviceSyncWindow.main)
+                }
+            }
+        }
 }
 
 /// Pins the actual AppKit window to Aqua once SwiftUI has created it.

@@ -63,6 +63,27 @@ struct MenuBarSummaryTests {
         #expect(navigation.section == .doctor)
     }
 
+    @Test
+    func statusItemPlacementSeedsOnlyItsOwnUnsetSlot() throws {
+        let suiteName = "dev.starkpat.devicesync.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let unrelatedKey = "NSStatusItem Preferred Position AnotherApp"
+        defaults.set(777, forKey: unrelatedKey)
+
+        #expect(DeviceSyncStatusItemPlacement.prepare(defaults: defaults))
+        #expect(
+            defaults.integer(forKey: DeviceSyncStatusItemPlacement.preferenceKey)
+                == DeviceSyncStatusItemPlacement.defaultOffsetFromRightEdge
+        )
+        #expect(defaults.integer(forKey: unrelatedKey) == 777)
+
+        defaults.set(333, forKey: DeviceSyncStatusItemPlacement.preferenceKey)
+        #expect(!DeviceSyncStatusItemPlacement.prepare(defaults: defaults))
+        #expect(defaults.integer(forKey: DeviceSyncStatusItemPlacement.preferenceKey) == 333)
+        #expect(defaults.integer(forKey: unrelatedKey) == 777)
+    }
+
     private func summary(_ verdict: FleetVerdict) -> MenuBarSummary {
         MenuBarSummary(
             verdict: verdict,

@@ -8,6 +8,9 @@
   keeping repair review, confirmation, and proof in the full Doctor window.
 - Made navigation and menu status share the same observable state, and made a
   failed refresh invalidate an old green posture instead of hiding stale truth.
+- Anchored the command center with a named native status item so its popover
+  remains reachable on a crowded or Stow-managed menu bar without moving any
+  other app's saved item.
 
 ## 0.1.2 — 2026-09-04
 

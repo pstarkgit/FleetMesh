@@ -54,6 +54,10 @@ repair remain in the singleton full window. Opening Fleet or Doctor from the
 menu bar updates shared navigation before activating that window, so there is
 no second dashboard or divergent repair state.
 
+The command center is hosted in SwiftUI but anchored by a named native
+`NSStatusItem`. Device Sync seeds only its own initial placement preference and
+preserves later user placement; it never rearranges another app's menu-bar item.
+
 ## Failure semantics
 
 - A missing snapshot is not a healthy machine; it is absent evidence.

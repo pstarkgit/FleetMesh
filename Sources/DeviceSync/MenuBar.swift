@@ -1,5 +1,108 @@
 import AppKit
+import Observation
 import SwiftUI
+
+enum DeviceSyncStatusItemPlacement {
+    static let autosaveName = "DeviceSync"
+    static let preferenceKey = "NSStatusItem Preferred Position \(autosaveName)"
+    static let defaultOffsetFromRightEdge = 48
+
+    /// AppKit reads this value when the status item is created. Seed only our
+    /// own unset slot, then preserve any placement the user establishes later.
+    @discardableResult
+    static func prepare(defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: preferenceKey) == nil else { return false }
+        defaults.set(defaultOffsetFromRightEdge, forKey: preferenceKey)
+        return true
+    }
+}
+
+@MainActor
+final class DeviceSyncStatusItemController: NSObject {
+    private let store: FleetStore
+    private let openSection: (AppSection) -> Void
+    private let statusItem: NSStatusItem
+    private let popover: NSPopover
+
+    init(store: FleetStore, openSection: @escaping (AppSection) -> Void) {
+        self.store = store
+        self.openSection = openSection
+
+        // The anonymous status item SwiftUI created could be pushed into this
+        // Mac's crowded off-screen overflow. A named AppKit item owns a stable
+        // Device Sync-only slot without changing any other app's placement.
+        DeviceSyncStatusItemPlacement.prepare()
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem.autosaveName = DeviceSyncStatusItemPlacement.autosaveName
+        statusItem.isVisible = true
+
+        popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentSize = NSSize(width: 350, height: 396)
+
+        super.init()
+
+        popover.contentViewController = NSHostingController(
+            rootView: DeviceSyncMenuBarView(
+                store: store,
+                openSection: { [weak self] section in
+                    self?.popover.performClose(nil)
+                    self?.openSection(section)
+                },
+                quit: { NSApp.terminate(nil) }
+            )
+        )
+
+        if let button = statusItem.button {
+            button.target = self
+            button.action = #selector(togglePopover(_:))
+            button.sendAction(on: [.leftMouseUp])
+            button.identifier = NSUserInterfaceItemIdentifier("devicesync.statusItem")
+        }
+
+        updateStatusItem()
+        observeStore()
+    }
+
+    @objc
+    private func togglePopover(_ sender: Any?) {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(sender)
+        } else {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    private func observeStore() {
+        withObservationTracking {
+            _ = store.menuBarSummary
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.updateStatusItem()
+                self.observeStore()
+            }
+        }
+    }
+
+    private func updateStatusItem() {
+        let summary = store.menuBarSummary
+        guard let button = statusItem.button else { return }
+        let label = "Device Sync — \(summary.headline)"
+        let image = NSImage(
+            systemSymbolName: summary.statusSymbol,
+            accessibilityDescription: label
+        )
+        image?.isTemplate = true
+        button.image = image
+        button.imagePosition = .imageOnly
+        button.toolTip = "\(label) · \(summary.machineLabel) · \(summary.attentionLabel)"
+        button.setAccessibilityLabel(label)
+    }
+}
 
 struct MenuBarSummary: Equatable, Sendable {
     let verdict: FleetVerdict
