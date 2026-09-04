@@ -2,7 +2,7 @@
 
 Device Sync is a native macOS fleet dashboard for Patrick's personal tooling.
 It inventories every Mac, compares observed versions and theme fingerprints to
-one explicit baseline, and turns drift into a reviewed bootstrap plan.
+one explicit baseline, and turns drift into guarded repair or a clear decision.
 
 ```mermaid
 flowchart LR
@@ -11,11 +11,34 @@ flowchart LR
     M --> D[Drift engine]
     S --> D
     D --> U[SwiftUI fleet dashboard]
-    U -->|user-triggered| I[Product-owned installers]
+    U -->|explicit repair| G[Doctor safety gate]
+    G -->|approved local action| I[Product-owned installers]
     U -->|orchestrates| H[harness-sync]
-    I --> B
+    I -->|fresh proof| B
     H --> B
 ```
+
+## Doctor
+
+Doctor closes the gap between finding drift and proving a repair:
+
+```mermaid
+flowchart LR
+    A[Fresh scan] --> B{Safety gate}
+    B -->|clean, local, approved| C[Product-owned repair]
+    B -->|dirty, unknown, remote, or manual| D[Stop and explain]
+    C --> E[Fresh scan and snapshot]
+    E --> F{Observed result}
+    F -->|matches baseline| G[Verified]
+    F -->|machine fixed, baseline differs| H[Baseline decision]
+    F -->|not proven| I[Still needs attention]
+```
+
+Repairs are always explicit and local to the Mac running Device Sync. Commands
+come only from Device Sync's built-in catalog; synced JSON never becomes
+executable. Doctor will not overwrite local source work or themes, pull or
+switch an unapproved checkout, repair another Mac remotely, or change the fleet
+baseline. Every attempted repair ends with a new observed snapshot.
 
 ## What the first release tracks
 

@@ -11,6 +11,9 @@ final class FleetStore {
     private(set) var assessments: [MachineAssessment] = []
     private(set) var issues: [FleetIssue] = []
     private(set) var isRefreshing = false
+    private(set) var isDoctorRunning = false
+    private(set) var activeDoctorComponentID: String?
+    private(set) var doctorRuns: [String: DoctorRunRecord] = [:]
     private(set) var lastError: String?
     private(set) var lastRefreshAt: Date?
 
@@ -18,20 +21,29 @@ final class FleetStore {
     var searchText = ""
 
     private let localRepository: LocalStateRepository
-    private let inventory: InventoryService
+    private let inventory: any InventoryCapturing
     private let driftEngine: DriftEngine
     private let bootstrapPlanner: BootstrapPlanner
+    private let doctorPlanner: DoctorPlanner
+    private let doctorCommandRunner: any DoctorCommandRunning
+    private let doctorHomeURL: URL
 
     init(
         localRepository: LocalStateRepository = LocalStateRepository(),
-        inventory: InventoryService = InventoryService(),
+        inventory: any InventoryCapturing = InventoryService(),
         driftEngine: DriftEngine = DriftEngine(),
-        bootstrapPlanner: BootstrapPlanner = BootstrapPlanner()
+        bootstrapPlanner: BootstrapPlanner = BootstrapPlanner(),
+        doctorPlanner: DoctorPlanner = DoctorPlanner(),
+        doctorCommandRunner: any DoctorCommandRunning = ProcessDoctorCommandRunner(),
+        doctorHomeURL: URL = FileManager.default.homeDirectoryForCurrentUser
     ) {
         self.localRepository = localRepository
         self.inventory = inventory
         self.driftEngine = driftEngine
         self.bootstrapPlanner = bootstrapPlanner
+        self.doctorPlanner = doctorPlanner
+        self.doctorCommandRunner = doctorCommandRunner
+        self.doctorHomeURL = doctorHomeURL
     }
 
     var fleetRootURL: URL? {
@@ -72,34 +84,13 @@ final class FleetStore {
     }
 
     func refresh() async {
-        guard !isRefreshing else { return }
+        guard !isRefreshing && !isDoctorRunning else { return }
         isRefreshing = true
         lastError = nil
         defer { isRefreshing = false }
 
         do {
-            let state = try localRepository.loadOrCreate()
-            localState = state
-            let snapshot = await inventory.capture(
-                machineID: state.machineID,
-                displayName: state.displayName
-            )
-            localSnapshot = snapshot
-
-            let repository = FleetRepository(
-                rootURL: URL(fileURLWithPath: state.fleetRootPath, isDirectory: true)
-            )
-            _ = try repository.publish(snapshot)
-
-            var read = repository.load()
-            if read.manifest == nil && !repository.manifestExists {
-                let seeded = FleetManifest(snapshot: snapshot)
-                try repository.saveManifest(seeded)
-                read = repository.load()
-            }
-
-            apply(read: read, currentSnapshot: snapshot)
-            lastRefreshAt = Date()
+            _ = try await scanAndPublish()
         } catch {
             lastError = error.localizedDescription
         }
@@ -152,10 +143,295 @@ final class FleetStore {
         bootstrapPlanner.plan(for: assessment)
     }
 
+    func doctorFindings(for assessment: MachineAssessment) -> [DoctorFinding] {
+        doctorPlanner.findings(for: assessment, manifest: manifest)
+    }
+
+    func doctorRun(for componentID: String) -> DoctorRunRecord? {
+        doctorRuns[componentID]
+    }
+
+    func repair(componentID: String, targetMachineID: String) async {
+        guard !isDoctorRunning && !isRefreshing else { return }
+        let startedAt = Date()
+        let originalName = selectedAssessment?.drifts
+            .first { $0.componentID == componentID }?.name ?? componentID
+
+        isDoctorRunning = true
+        activeDoctorComponentID = componentID
+        lastError = nil
+        doctorRuns[componentID] = DoctorRunRecord(
+            componentID: componentID,
+            componentName: originalName,
+            outcome: .running,
+            summary: "Running a fresh safety scan before any change.",
+            output: nil,
+            startedAt: startedAt,
+            finishedAt: nil
+        )
+        defer {
+            isDoctorRunning = false
+            activeDoctorComponentID = nil
+        }
+
+        do {
+            let state = try localRepository.loadOrCreate()
+            guard targetMachineID == state.machineID else {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: originalName,
+                    outcome: .protected,
+                    summary: "Doctor can repair only the Mac on which it is running. Open Device Sync on the selected Mac to continue.",
+                    output: nil,
+                    startedAt: startedAt
+                )
+                return
+            }
+
+            let preflight = try await scanForDoctor()
+            guard preflight.machineID == targetMachineID else {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: originalName,
+                    outcome: .protected,
+                    summary: "Doctor can repair only the Mac on which it is running.",
+                    output: nil,
+                    startedAt: startedAt
+                )
+                return
+            }
+
+            let assessment = driftEngine.assess(snapshot: preflight, manifest: manifest)
+            guard let drift = assessment.drifts.first(where: { $0.componentID == componentID }) else {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: originalName,
+                    outcome: .needsAttention,
+                    summary: "The fresh scan did not contain enough managed evidence to choose a repair.",
+                    output: nil,
+                    startedAt: startedAt
+                )
+                return
+            }
+
+            if drift.state == .aligned {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: .repaired,
+                    summary: "Fresh evidence is already aligned; no repair command ran.",
+                    output: nil,
+                    startedAt: startedAt
+                )
+                return
+            }
+
+            let finding = doctorPlanner.finding(
+                for: drift,
+                observation: preflight.component(componentID),
+                target: manifest?.target(componentID)
+            )
+            guard finding.canRepair, let recipe = finding.recipe else {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: finding.disposition == .protected ? .protected : .needsAttention,
+                    summary: finding.detail,
+                    output: nil,
+                    startedAt: startedAt
+                )
+                return
+            }
+
+            guard recipe.componentID == componentID,
+                  DoctorCatalog.definition(for: componentID)?.recipe == recipe else {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: .protected,
+                    summary: "The requested action did not match Doctor's built-in repair catalog.",
+                    output: nil,
+                    startedAt: startedAt
+                )
+                return
+            }
+
+            let command = recipe.resolve(homeURL: doctorHomeURL)
+            guard FileManager.default.isExecutableFile(atPath: command.executableURL.path) else {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: .failed,
+                    summary: "The product-owned repair entrypoint is missing or is not executable.",
+                    output: nil,
+                    startedAt: startedAt
+                )
+                return
+            }
+            if let workingDirectoryURL = command.workingDirectoryURL {
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(
+                    atPath: workingDirectoryURL.path,
+                    isDirectory: &isDirectory
+                ), isDirectory.boolValue else {
+                    finishDoctorRun(
+                        componentID: componentID,
+                        componentName: drift.name,
+                        outcome: .failed,
+                        summary: "The product checkout required by this repair is unavailable.",
+                        output: nil,
+                        startedAt: startedAt
+                    )
+                    return
+                }
+            }
+
+            doctorRuns[componentID] = DoctorRunRecord(
+                componentID: componentID,
+                componentName: drift.name,
+                outcome: .running,
+                summary: "Running \(finding.title), then Device Sync will re-scan installed state.",
+                output: nil,
+                startedAt: startedAt,
+                finishedAt: nil
+            )
+            let commandResult = await doctorCommandRunner.run(command)
+
+            let postflight: MachineSnapshot
+            do {
+                postflight = try await scanForDoctor()
+            } catch {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: .failed,
+                    summary: "The repair ran, but the required post-repair scan failed: \(error.localizedDescription)",
+                    output: commandResult.combinedOutput,
+                    startedAt: startedAt
+                )
+                return
+            }
+
+            let postAssessment = driftEngine.assess(snapshot: postflight, manifest: manifest)
+            let postDrift = postAssessment.drifts.first { $0.componentID == componentID }
+            if commandResult.timedOut {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: .failed,
+                    summary: "The repair exceeded its time limit. Fresh evidence was published and still requires review.",
+                    output: commandResult.combinedOutput,
+                    startedAt: startedAt
+                )
+            } else if commandResult.exitCode != 0 {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: .failed,
+                    summary: "The product-owned repair exited with status \(commandResult.exitCode). Fresh evidence was published.",
+                    output: commandResult.combinedOutput,
+                    startedAt: startedAt
+                )
+            } else if postDrift?.state == .aligned {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: .repaired,
+                    summary: "Repair completed and a fresh scan now matches the fleet baseline.",
+                    output: commandResult.combinedOutput,
+                    startedAt: startedAt
+                )
+            } else if doctorPlanner.repairedLocalState(
+                before: preflight.component(componentID),
+                after: postflight.component(componentID)
+            ) {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: .repairedNeedsBaselineReview,
+                    summary: "The installed app now matches its clean source checkout. The fleet baseline still records the prior build and needs a separate explicit decision.",
+                    output: commandResult.combinedOutput,
+                    startedAt: startedAt
+                )
+            } else {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: .needsAttention,
+                    summary: postDrift?.summary
+                        ?? "The repair exited successfully, but fresh evidence did not prove alignment.",
+                    output: commandResult.combinedOutput,
+                    startedAt: startedAt
+                )
+            }
+        } catch {
+            lastError = error.localizedDescription
+            finishDoctorRun(
+                componentID: componentID,
+                componentName: originalName,
+                outcome: .failed,
+                summary: "Doctor could not complete its safety scan: \(error.localizedDescription)",
+                output: nil,
+                startedAt: startedAt
+            )
+        }
+    }
+
     private func reloadFleet() async {
         guard let fleetRootURL, let localSnapshot else { return }
         let read = FleetRepository(rootURL: fleetRootURL).load()
         apply(read: read, currentSnapshot: localSnapshot)
+    }
+
+    private func scanForDoctor() async throws -> MachineSnapshot {
+        isRefreshing = true
+        defer { isRefreshing = false }
+        return try await scanAndPublish()
+    }
+
+    private func scanAndPublish() async throws -> MachineSnapshot {
+        let state = try localRepository.loadOrCreate()
+        localState = state
+        let snapshot = await inventory.capture(
+            machineID: state.machineID,
+            displayName: state.displayName
+        )
+        localSnapshot = snapshot
+
+        let repository = FleetRepository(
+            rootURL: URL(fileURLWithPath: state.fleetRootPath, isDirectory: true)
+        )
+        _ = try repository.publish(snapshot)
+
+        var read = repository.load()
+        if read.manifest == nil && !repository.manifestExists {
+            let seeded = FleetManifest(snapshot: snapshot)
+            try repository.saveManifest(seeded)
+            read = repository.load()
+        }
+
+        apply(read: read, currentSnapshot: snapshot)
+        lastRefreshAt = Date()
+        return snapshot
+    }
+
+    private func finishDoctorRun(
+        componentID: String,
+        componentName: String,
+        outcome: DoctorRunOutcome,
+        summary: String,
+        output: String?,
+        startedAt: Date
+    ) {
+        doctorRuns[componentID] = DoctorRunRecord(
+            componentID: componentID,
+            componentName: componentName,
+            outcome: outcome,
+            summary: summary,
+            output: output,
+            startedAt: startedAt,
+            finishedAt: Date()
+        )
     }
 
     private func apply(read: FleetReadResult, currentSnapshot: MachineSnapshot) {

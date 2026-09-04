@@ -2,6 +2,7 @@ import SwiftUI
 
 private enum AppSection: String, CaseIterable, Identifiable {
     case fleet = "Fleet"
+    case doctor = "Doctor"
     case bootstrap = "Bootstrap"
     case settings = "Settings"
 
@@ -10,6 +11,7 @@ private enum AppSection: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .fleet: "macbook.and.iphone"
+        case .doctor: "stethoscope"
         case .bootstrap: "sparkles.rectangle.stack"
         case .settings: "gearshape"
         }
@@ -29,8 +31,10 @@ struct RootView: View {
                 switch section {
                 case .fleet:
                     FleetView(store: store) {
-                        section = .bootstrap
+                        section = .doctor
                     }
+                case .doctor:
+                    DoctorView(store: store)
                 case .bootstrap:
                     BootstrapView(store: store)
                 case .settings:
@@ -296,7 +300,7 @@ struct FleetView: View {
                         store.selectedMachineID = assessment.snapshot.machineID
                         onOpenBootstrap()
                     } label: {
-                        Label("Open bootstrap plan", systemImage: "list.bullet.rectangle.portrait")
+                        Label("Open Doctor", systemImage: "stethoscope")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
@@ -543,6 +547,437 @@ private struct FlowStep: View {
         case .active: DSTheme.orange
         case .pending: DSTheme.inkMuted
         }
+    }
+}
+
+struct DoctorView: View {
+    @Bindable var store: FleetStore
+    @State private var pendingRepair: DoctorFinding?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                doctorHeader
+                if let error = store.lastError {
+                    IssueBanner(title: "Doctor evidence failed", detail: error, color: DSTheme.red)
+                }
+
+                if let assessment = store.selectedAssessment {
+                    let findings = store.doctorFindings(for: assessment)
+                    MachineHero(
+                        assessment: assessment,
+                        isCurrent: assessment.snapshot.machineID == store.localSnapshot?.machineID
+                    )
+                    DoctorPipeline(isRunning: store.isDoctorRunning)
+                    DoctorSummary(findings: findings)
+
+                    if assessment.snapshot.machineID != store.localSnapshot?.machineID {
+                        IssueBanner(
+                            title: "Open Doctor on this Mac",
+                            detail: "This report is read-only here. Device Sync never repairs another Mac remotely.",
+                            color: DSTheme.purple
+                        )
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        SectionTitle(
+                            title: "Diagnosis",
+                            subtitle: "Every repair re-scans before changing anything and publishes fresh proof afterward"
+                        )
+
+                        if assessment.isStale {
+                            DoctorStaleCard()
+                        } else if findings.isEmpty {
+                            DoctorAlignedCard()
+                        } else {
+                            ForEach(findings) { finding in
+                                DoctorFindingRow(
+                                    finding: finding,
+                                    run: store.doctorRun(for: finding.id),
+                                    isActive: store.activeDoctorComponentID == finding.id,
+                                    isLocalMachine: assessment.snapshot.machineID == store.localSnapshot?.machineID,
+                                    doctorBusy: store.isDoctorRunning || store.isRefreshing
+                                ) {
+                                    pendingRepair = finding
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "No machine to diagnose",
+                        systemImage: "stethoscope",
+                        description: Text("Scan this Mac or choose a machine report.")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 360)
+                }
+            }
+            .padding(28)
+        }
+        .confirmationDialog(
+            pendingRepair.map { "Run \($0.title)?" } ?? "Run product repair?",
+            isPresented: Binding(
+                get: { pendingRepair != nil },
+                set: { if !$0 { pendingRepair = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Run product-owned repair") {
+                guard let finding = pendingRepair,
+                      let machineID = store.selectedAssessment?.snapshot.machineID else { return }
+                pendingRepair = nil
+                Task {
+                    await store.repair(
+                        componentID: finding.id,
+                        targetMachineID: machineID
+                    )
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingRepair = nil }
+        } message: {
+            if let finding = pendingRepair, let recipe = finding.recipe {
+                Text("Device Sync will run \(recipe.displayCommand), then re-scan and publish the observed result. The fleet baseline will not change.")
+            }
+        }
+    }
+
+    private var doctorHeader: some View {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("GUARDED REPAIR")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .tracking(1.5)
+                    .foregroundStyle(DSTheme.purple)
+                Text("Doctor")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(DSTheme.ink)
+                Text("Diagnose drift, run only product-owned repairs, and require fresh installed-state proof.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(DSTheme.inkSoft)
+            }
+            Spacer()
+            Button {
+                Task { await store.refresh() }
+            } label: {
+                Label(store.isRefreshing ? "Scanning…" : "Scan this Mac", systemImage: "stethoscope")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(store.isRefreshing || store.isDoctorRunning)
+        }
+    }
+}
+
+private struct DoctorPipeline: View {
+    let isRunning: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            stage(number: 1, title: "Diagnose", detail: "Fresh evidence", color: DSTheme.blue)
+            arrow
+            stage(number: 2, title: "Guard", detail: "Protect local work", color: DSTheme.purple)
+            arrow
+            stage(number: 3, title: "Repair", detail: "Owned installer", color: DSTheme.orange)
+            arrow
+            stage(number: 4, title: "Prove", detail: "Fresh snapshot", color: DSTheme.green)
+        }
+        .deviceCard()
+        .overlay(alignment: .topTrailing) {
+            if isRunning {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.small)
+                    Text("Doctor running")
+                        .font(.caption.weight(.semibold))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.white)
+                .clipShape(Capsule())
+                .padding(12)
+            }
+        }
+    }
+
+    private func stage(
+        number: Int,
+        title: String,
+        detail: String,
+        color: Color
+    ) -> some View {
+        HStack(spacing: 10) {
+            Text("\(number)")
+                .font(.caption.bold())
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(color)
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(DSTheme.ink)
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(DSTheme.inkMuted)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var arrow: some View {
+        Image(systemName: "chevron.right")
+            .font(.caption.bold())
+            .foregroundStyle(DSTheme.inkMuted)
+    }
+}
+
+private struct DoctorSummary: View {
+    let findings: [DoctorFinding]
+
+    var body: some View {
+        HStack(spacing: 12) {
+            DoctorCountCard(
+                title: "Repairable",
+                value: count(.repairable),
+                detail: "explicit product repair",
+                symbol: "wrench.and.screwdriver.fill",
+                color: DSTheme.orange
+            )
+            DoctorCountCard(
+                title: "Protected",
+                value: count(.protected),
+                detail: "local work preserved",
+                symbol: "hand.raised.fill",
+                color: DSTheme.purple
+            )
+            DoctorCountCard(
+                title: "Decisions",
+                value: count(.manual),
+                detail: "operator choice needed",
+                symbol: "person.crop.circle.badge.questionmark",
+                color: DSTheme.blue
+            )
+        }
+    }
+
+    private func count(_ disposition: DoctorDisposition) -> Int {
+        findings.filter { $0.disposition == disposition }.count
+    }
+}
+
+private struct DoctorCountCard: View {
+    let title: String
+    let value: Int
+    let detail: String
+    let symbol: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 38, height: 38)
+                .background(color.opacity(0.11))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.caption).foregroundStyle(DSTheme.inkMuted)
+                Text("\(value)")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(DSTheme.ink)
+                Text(detail).font(.caption2).foregroundStyle(DSTheme.inkMuted)
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .deviceCard()
+    }
+}
+
+private struct DoctorFindingRow: View {
+    let finding: DoctorFinding
+    let run: DoctorRunRecord?
+    let isActive: Bool
+    let isLocalMachine: Bool
+    let doctorBusy: Bool
+    let onRepair: () -> Void
+
+    @State private var showOutput = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 13) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(dispositionColor.opacity(0.11))
+                    if isActive {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: dispositionSymbol)
+                            .foregroundStyle(dispositionColor)
+                    }
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(finding.drift.name)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(DSTheme.ink)
+                        Text(finding.disposition.label.uppercased())
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundStyle(dispositionColor)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(dispositionColor.opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                    Text(finding.title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(DSTheme.ink)
+                    Text(finding.detail)
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkSoft)
+                }
+                Spacer()
+
+                if finding.canRepair {
+                    Button(isActive ? "Repairing…" : "Repair…") { onRepair() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(DSTheme.orange)
+                        .disabled(doctorBusy || !isLocalMachine)
+                        .accessibilityIdentifier("doctor.repair.\(finding.id)")
+                }
+            }
+
+            if let recipe = finding.recipe {
+                HStack(spacing: 8) {
+                    Image(systemName: "terminal")
+                    Text(recipe.displayCommand)
+                        .lineLimit(1)
+                        .textSelection(.enabled)
+                    Spacer()
+                    Text("Built into Device Sync")
+                        .foregroundStyle(DSTheme.inkMuted)
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(DSTheme.inkSoft)
+                .padding(10)
+                .background(DSTheme.canvas)
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+            }
+
+            if let run {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: runSymbol(run.outcome))
+                        .foregroundStyle(runColor(run.outcome))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(run.outcome.label)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(runColor(run.outcome))
+                        Text(run.summary)
+                            .font(.caption)
+                            .foregroundStyle(DSTheme.inkSoft)
+                    }
+                    Spacer()
+                }
+                .padding(10)
+                .background(runColor(run.outcome).opacity(0.07))
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+
+                if let output = run.output, !output.isEmpty {
+                    DisclosureGroup("Repair output", isExpanded: $showOutput) {
+                        ScrollView(.horizontal) {
+                            Text(output)
+                                .font(.system(size: 10, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 8)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(DSTheme.inkSoft)
+                }
+            }
+        }
+        .deviceCard()
+    }
+
+    private var dispositionColor: Color {
+        switch finding.disposition {
+        case .repairable: DSTheme.orange
+        case .protected: DSTheme.purple
+        case .manual: DSTheme.blue
+        }
+    }
+
+    private var dispositionSymbol: String {
+        switch finding.disposition {
+        case .repairable: "wrench.and.screwdriver.fill"
+        case .protected: "hand.raised.fill"
+        case .manual: "person.crop.circle.badge.questionmark"
+        }
+    }
+
+    private func runColor(_ outcome: DoctorRunOutcome) -> Color {
+        switch outcome {
+        case .running: DSTheme.blue
+        case .repaired: DSTheme.green
+        case .repairedNeedsBaselineReview: DSTheme.blue
+        case .needsAttention: DSTheme.orange
+        case .protected: DSTheme.purple
+        case .failed: DSTheme.red
+        }
+    }
+
+    private func runSymbol(_ outcome: DoctorRunOutcome) -> String {
+        switch outcome {
+        case .running: "clock.arrow.circlepath"
+        case .repaired: "checkmark.seal.fill"
+        case .repairedNeedsBaselineReview: "checkmark.circle.badge.questionmark.fill"
+        case .needsAttention: "exclamationmark.triangle.fill"
+        case .protected: "hand.raised.fill"
+        case .failed: "xmark.octagon.fill"
+        }
+    }
+}
+
+private struct DoctorAlignedCard: View {
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 26))
+                .foregroundStyle(DSTheme.green)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("No repair needed")
+                    .font(.headline)
+                    .foregroundStyle(DSTheme.ink)
+                Text("Fresh observed state matches the selected fleet baseline.")
+                    .font(.caption)
+                    .foregroundStyle(DSTheme.inkSoft)
+            }
+            Spacer()
+        }
+        .deviceCard()
+    }
+}
+
+private struct DoctorStaleCard: View {
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "clock.badge.exclamationmark.fill")
+                .font(.system(size: 26))
+                .foregroundStyle(DSTheme.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Fresh evidence required")
+                    .font(.headline)
+                    .foregroundStyle(DSTheme.ink)
+                Text("This report is stale. Open Device Sync on that Mac and scan before choosing or verifying a repair.")
+                    .font(.caption)
+                    .foregroundStyle(DSTheme.inkSoft)
+            }
+            Spacer()
+        }
+        .deviceCard()
     }
 }
 

@@ -30,7 +30,7 @@ struct BootstrapPlanner: Sendable {
     }
 
     private func step(for drift: ComponentDrift) -> BootstrapStep {
-        let definition = Self.actions[drift.componentID]
+        let definition = DoctorCatalog.definition(for: drift.componentID)
         let phase: BootstrapPhase = drift.kind == .configuration || drift.kind == .theme
             ? .configuration
             : .applications
@@ -53,7 +53,7 @@ struct BootstrapPlanner: Sendable {
             componentID: drift.componentID,
             title: definition?.title ?? "Converge \(drift.name)",
             detail: definition?.detail ?? "Use the product's approved installation or configuration workflow, then verify the observed result.",
-            command: definition?.command,
+            command: definition?.recipe?.displayCommand,
             requiresReview: true
         )
     }
@@ -63,77 +63,4 @@ struct BootstrapPlanner: Sendable {
         return steps.filter { seen.insert($0.id).inserted }
     }
 
-    private struct Action: Sendable {
-        let title: String
-        let detail: String
-        let command: String?
-    }
-
-    private static let actions: [String: Action] = [
-        "ai-continuum": Action(
-            title: "Install and restore ai-continuum",
-            detail: "Use ai-continuum's guarded new-laptop workflow. Its SQLite and WAL files must remain on local storage.",
-            command: "~/code/ai-continuum/scripts/aic-bootstrap.sh"
-        ),
-        "authbar": Action(
-            title: "Install AuthBar from its source checkout",
-            detail: "Run AuthBar's transactional installer and require its installed --check acceptance gate.",
-            command: "~/code/authbar/install.sh"
-        ),
-        "stow": Action(
-            title: "Install Stow from its source checkout",
-            detail: "Use Stow's transactional installer; preserve Accessibility identity and verify the live menu-bar app.",
-            command: "~/code/Stow/install.sh"
-        ),
-        "murmr-voice": Action(
-            title: "Install Murmr Voice",
-            detail: "Use Murmr's own installer and re-validate microphone and accessibility permissions on this Mac.",
-            command: "~/code/Murmur/install.sh"
-        ),
-        "model-bridge": Action(
-            title: "Install Model Bridge",
-            detail: "Use Model Bridge's signed package workflow; account validation must remain read-only.",
-            command: "~/code/ModelBridge/install.sh"
-        ),
-        "codex-voice": Action(
-            title: "Install Codex Voice",
-            detail: "Build and install through Codex Voice's own installer, then validate its live app process.",
-            command: "~/code/CodexVoice/install.sh"
-        ),
-        "harness-sync": Action(
-            title: "Run the harness-sync bootstrap",
-            detail: "Let harness-sync own Claude/OMP links. Review its manual per-machine token and identity steps separately.",
-            command: "~/harness-sync/bootstrap.sh"
-        ),
-        "codex-desktop": Action(
-            title: "Install the approved Codex Desktop build",
-            detail: "Install through the approved distribution channel, then let Device Sync read the signed bundle version.",
-            command: nil
-        ),
-        "codex-cli": Action(
-            title: "Install the approved Codex CLI build",
-            detail: "Use the managed CLI distribution for this Mac and verify its reported version.",
-            command: nil
-        ),
-        "kiro-crew": Action(
-            title: "Install Kiro Crew through Builder Toolbox",
-            detail: "Use Kiro Crew's managed package, then verify its signed desktop app and local gateway.",
-            command: "~/.toolbox/bin/toolbox install kirocrew"
-        ),
-        "codex-themes": Action(
-            title: "Review Codex theme drift",
-            detail: "Compare named theme files with the reference Mac before copying; Device Sync never publishes theme contents.",
-            command: nil
-        ),
-        "warp-themes": Action(
-            title: "Review Warp theme drift",
-            detail: "Compare the theme set with the reference Mac and explicitly choose which files to converge.",
-            command: nil
-        ),
-        "kiro-crew-themes": Action(
-            title: "Review Kiro Crew theme drift",
-            detail: "Compare Kiro Crew's native theme packs with the reference Mac; do not overwrite a locally edited theme silently.",
-            command: nil
-        ),
-    ]
 }

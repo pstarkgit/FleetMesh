@@ -7,7 +7,7 @@ questions with evidence:
 
 1. What is installed and configured on each Mac?
 2. How does each Mac differ from the explicitly chosen fleet baseline?
-3. What reviewed action would converge a new or drifting Mac?
+3. What can Doctor safely repair, and what still requires a human decision?
 
 The app may inventory and publish a redacted machine snapshot autonomously.
 Installing, updating, restoring configuration, changing the fleet baseline,
@@ -16,7 +16,8 @@ or replacing a theme always requires an explicit user action.
 ## Ownership boundaries
 
 - Device Sync owns the desired-state manifest, redacted machine snapshots,
-  drift calculation, and bootstrap orchestration UI.
+  drift calculation, bootstrap orchestration UI, and Doctor's hard-coded local
+  repair catalog.
 - Each managed product owns its own installer, updater, runtime state, and
   health semantics. Invoke those entrypoints; do not duplicate them here.
 - `~/harness-sync` owns recurring Claude/OMP configuration linking. Device
@@ -45,6 +46,12 @@ or replacing a theme always requires an explicit user action.
 - Keep inventory probes read-only and bounded. Do not invoke billable APIs.
 - Preserve source checkout state; never pull, install, commit, push, or publish
   managed repositories as a side effect of refresh.
+- Doctor may invoke a product-owned repair only after an explicit UI action, a
+  fresh local preflight, and catalog validation. It must always publish and
+  evaluate a postflight snapshot; command exit zero is not proof of repair.
+- Never execute commands from the fleet manifest or a machine report. Never
+  repair a remote Mac, overwrite dirty source or themes, switch an unapproved
+  revision, or change the baseline as part of Doctor.
 - Use stable IDs in persisted JSON and add migrations before changing meaning.
 - Validate with `swift test`, a release build, the installed app's `--check`,
   the running process, and the generated snapshot/manifest.

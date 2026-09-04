@@ -19,7 +19,9 @@ flowchart TB
     F --> R[All machine reports]
     B[Desired-state manifest] --> R
     R --> UI
-    UI -->|explicit action only| X[Existing install/update entrypoints]
+    UI -->|explicit Doctor action| G[Local safety gate]
+    G --> X[Existing install/update entrypoints]
+    X --> P
 
     X --> A[ai-continuum installer]
     X --> AB[AuthBar installer]
@@ -61,7 +63,15 @@ flowchart TB
 
 ## Bootstrap boundary
 
-The setup screen is a plan and orchestration surface. A future execution
-engine should use typed, product-owned actions with preview, confirmation,
-streamed logs, timeout, rollback evidence, and post-install probes. It must not
-turn shell snippets in a synced manifest into executable code.
+Bootstrap is the full new-Mac sequence and Doctor is the local repair executor.
+Doctor uses typed, built-in product actions with command preview, explicit
+confirmation, bounded execution, private local output capture, and mandatory
+post-install probes. It never turns shell snippets or other values from the
+synced manifest into executable code.
+
+Before execution, Doctor publishes a fresh snapshot and re-evaluates the exact
+component. It stops on remote targets, dirty source, unknown evidence, a source
+revision outside the baseline, missing entrypoints, and manual theme or identity
+decisions. After execution, it publishes another fresh snapshot. Exit zero is
+not success by itself: the UI reports verified alignment, machine repair with a
+separate baseline decision, or remaining attention from observed state.

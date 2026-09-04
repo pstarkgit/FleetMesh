@@ -128,6 +128,10 @@ struct ThemeProbeDefinition: Sendable {
     }
 }
 
+protocol InventoryCapturing: Sendable {
+    func capture(machineID: String, displayName: String?) async -> MachineSnapshot
+}
+
 struct InventoryService: Sendable {
     let homeURL: URL
     let commandRunner: any CommandRunning
@@ -695,6 +699,8 @@ struct InventoryService: Sendable {
         return String(decoding: bytes, as: UTF8.self)
     }
 }
+
+extension InventoryService: InventoryCapturing {}
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
