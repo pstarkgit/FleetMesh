@@ -21,6 +21,9 @@ or replacing a theme always requires an explicit user action.
   health semantics. Invoke those entrypoints; do not duplicate them here.
 - `~/harness-sync` owns recurring Claude/OMP configuration linking. Device
   Sync reports and orchestrates it but never rewrites the files it owns.
+- Kiro Crew is the active managed agent product and Builder Toolbox owns its
+  installation/update lifecycle. MeshClaw is retired; never treat its old
+  state or component IDs as current Kiro Crew evidence.
 - ai-continuum owns its SQLite databases. Never copy live SQLite, WAL, socket,
   credentials, tokens, cookies, or Keychain material into the fleet folder.
 - BrainVault/StarkBrain is durable knowledge, not the live fleet-state store.
@@ -45,4 +48,3 @@ or replacing a theme always requires an explicit user action.
 - Use stable IDs in persisted JSON and add migrations before changing meaning.
 - Validate with `swift test`, a release build, the installed app's `--check`,
   the running process, and the generated snapshot/manifest.
-

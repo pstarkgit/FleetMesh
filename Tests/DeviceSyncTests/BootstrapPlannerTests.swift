@@ -79,8 +79,8 @@ struct BootstrapPlannerTests {
             components: []
         )
         let drift = ComponentDrift(
-            componentID: "meshclaw-themes",
-            name: "MeshClaw themes",
+            componentID: "kiro-crew-themes",
+            name: "Kiro Crew themes",
             kind: .theme,
             state: .notManaged,
             severity: .information,
@@ -92,6 +92,6 @@ struct BootstrapPlannerTests {
 
         let plan = BootstrapPlanner().plan(for: assessment)
 
-        #expect(!plan.contains { $0.componentID == "meshclaw-themes" })
+        #expect(!plan.contains { $0.componentID == "kiro-crew-themes" })
     }
 }

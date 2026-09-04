@@ -707,7 +707,7 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(store.manifest == nil ? "No baseline" : "Fleet protocol v\(store.manifest?.schemaVersion ?? 1)")
                                 .font(.headline)
-                            Text(store.manifest.map { "Updated \(relativeDate($0.updatedAt)) · \($0.targets.count) targets" } ?? "Create one from a verified Mac.")
+                            Text(store.manifest.map { "Updated \(relativeDate($0.updatedAt)) · \($0.activeTargets.count) targets" } ?? "Create one from a verified Mac.")
                                 .font(.caption)
                                 .foregroundStyle(DSTheme.inkMuted)
                         }

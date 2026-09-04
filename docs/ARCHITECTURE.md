@@ -26,6 +26,7 @@ flowchart TB
     X --> ST[Stow installer]
     X --> MV[Murmr installer]
     X --> MB[Model Bridge installer]
+    X --> KC[Kiro Crew via Builder Toolbox]
     X --> HS[harness-sync bootstrap/sync]
 ```
 
@@ -48,6 +49,9 @@ flowchart TB
 - A missing baseline produces `unknown`, not an invented target.
 - Source checkout revision and installed artifact revision are separate. Local
   source changes are surfaced but never copied, reset, pulled, or installed.
+- Component retirement is explicit. MeshClaw evidence from older writers is
+  ignored; Kiro Crew's managed package, signed app, runtime, and native themes
+  are the active fleet surfaces.
 - Cloud-folder unavailability falls back only when no shared path is configured.
   Once a user chooses a fleet folder, failure is reported rather than silently
   writing to a different authority.

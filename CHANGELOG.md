@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 — 2026-09-04
+
+- Replaced retired MeshClaw theme inventory with Kiro Crew's managed package,
+  signed desktop runtime, and recursive native-theme fingerprint.
+- Added component lifecycle handling so older MeshClaw evidence is ignored in
+  drift, baseline lookup, and baseline counts.
+
 ## 0.1.0 — 2026-09-04
 
 - Added the native macOS fleet dashboard with explicit unknown, stale, drift,

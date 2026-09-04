@@ -115,6 +115,11 @@ struct BootstrapPlanner: Sendable {
             detail: "Use the managed CLI distribution for this Mac and verify its reported version.",
             command: nil
         ),
+        "kiro-crew": Action(
+            title: "Install Kiro Crew through Builder Toolbox",
+            detail: "Use Kiro Crew's managed package, then verify its signed desktop app and local gateway.",
+            command: "~/.toolbox/bin/toolbox install kirocrew"
+        ),
         "codex-themes": Action(
             title: "Review Codex theme drift",
             detail: "Compare named theme files with the reference Mac before copying; Device Sync never publishes theme contents.",
@@ -125,9 +130,9 @@ struct BootstrapPlanner: Sendable {
             detail: "Compare the theme set with the reference Mac and explicitly choose which files to converge.",
             command: nil
         ),
-        "meshclaw-themes": Action(
-            title: "Review MeshClaw theme drift",
-            detail: "Use MeshClaw's theme ownership and validation path; do not overwrite a locally edited theme silently.",
+        "kiro-crew-themes": Action(
+            title: "Review Kiro Crew theme drift",
+            detail: "Compare Kiro Crew's native theme packs with the reference Mac; do not overwrite a locally edited theme silently.",
             command: nil
         ),
     ]

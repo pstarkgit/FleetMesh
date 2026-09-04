@@ -1,5 +1,17 @@
 import Foundation
 
+enum ComponentLifecycle {
+    /// Component IDs that older Device Sync writers may still publish. They are
+    /// intentionally ignored rather than shown as optional software forever.
+    static let retiredIDs: Set<String> = [
+        "meshclaw-themes",
+    ]
+
+    static func isActive(_ id: String) -> Bool {
+        !retiredIDs.contains(id)
+    }
+}
+
 enum ComponentKind: String, Codable, CaseIterable, Sendable {
     case application
     case commandLineTool
@@ -155,6 +167,10 @@ struct FleetManifest: Codable, Hashable, Sendable {
     let updatedByMachineID: String
     let targets: [ManifestTarget]
 
+    var activeTargets: [ManifestTarget] {
+        targets.filter { ComponentLifecycle.isActive($0.id) }
+    }
+
     init(snapshot: MachineSnapshot, updatedAt: Date = Date()) {
         schemaVersion = Self.currentSchemaVersion
         revision = UUID().uuidString.lowercased()
@@ -162,15 +178,17 @@ struct FleetManifest: Codable, Hashable, Sendable {
         updatedByMachineID = snapshot.machineID
         targets = snapshot.components
             .filter { observation in
-                observation.status == .installed
-                    || (observation.kind == .theme && !(observation.items ?? []).isEmpty)
+                ComponentLifecycle.isActive(observation.id)
+                    && (observation.status == .installed
+                        || (observation.kind == .theme && !(observation.items ?? []).isEmpty))
             }
             .map { ManifestTarget(observation: $0) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func target(_ id: String) -> ManifestTarget? {
-        targets.first { $0.id == id }
+        guard ComponentLifecycle.isActive(id) else { return nil }
+        return targets.first { $0.id == id }
     }
 }
 

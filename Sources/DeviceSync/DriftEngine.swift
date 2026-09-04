@@ -14,11 +14,15 @@ struct DriftEngine: Sendable {
     ) -> MachineAssessment {
         let drifts: [ComponentDrift]
         if let manifest {
-            let targetDrifts = manifest.targets.map { target in
+            let activeTargets = manifest.activeTargets
+            let activeObservations = snapshot.components.filter {
+                ComponentLifecycle.isActive($0.id)
+            }
+            let targetDrifts = activeTargets.map { target in
                 assess(target: target, observation: snapshot.component(target.id))
             }
-            let targetIDs = Set(manifest.targets.map(\.id))
-            let observedOnly = snapshot.components
+            let targetIDs = Set(activeTargets.map(\.id))
+            let observedOnly = activeObservations
                 .filter { !targetIDs.contains($0.id) }
                 .map { observation in
                     ComponentDrift(
@@ -39,7 +43,9 @@ struct DriftEngine: Sendable {
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
         } else {
-            drifts = snapshot.components.map { observation in
+            drifts = snapshot.components
+                .filter { ComponentLifecycle.isActive($0.id) }
+                .map { observation in
                 ComponentDrift(
                     componentID: observation.id,
                     name: observation.name,

@@ -134,6 +134,31 @@ struct DriftEngineTests {
         #expect(assessment.attentionCount == 0)
         #expect(assessment.verdict == .aligned)
     }
+
+    @Test
+    func retiredMeshClawEvidenceIsIgnoredAcrossOldReportsAndBaselines() {
+        let retired = ComponentObservation(
+            id: "meshclaw-themes",
+            name: "MeshClaw themes",
+            kind: .theme,
+            status: .installed,
+            configurationFingerprint: "retired",
+            items: ["legacy.json"],
+            evidence: "Old writer"
+        )
+        let reference = fixtureSnapshot(components: [fixtureComponent(), retired])
+        let observed = fixtureSnapshot(components: [fixtureComponent(), retired])
+
+        let assessment = DriftEngine().assess(
+            snapshot: observed,
+            manifest: FleetManifest(snapshot: reference)
+        )
+
+        #expect(!assessment.drifts.contains { $0.componentID == "meshclaw-themes" })
+        #expect(assessment.attentionCount == 0)
+        #expect(!FleetManifest(snapshot: reference).targets.contains { $0.id == "meshclaw-themes" })
+        #expect(FleetManifest(snapshot: reference).target("meshclaw-themes") == nil)
+    }
 }
 
 private func fixtureComponent(

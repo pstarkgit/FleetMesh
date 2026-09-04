@@ -70,6 +70,32 @@ struct AppProbeDefinition: Sendable {
     let sourceRelativePath: String?
     let commitKeys: [String]
     let processNames: [String]
+    let managedVersionProbe: ManagedVersionProbeDefinition?
+
+    init(
+        id: String,
+        name: String,
+        bundleIdentifiers: [String],
+        preferredPaths: [String],
+        sourceRelativePath: String?,
+        commitKeys: [String],
+        processNames: [String],
+        managedVersionProbe: ManagedVersionProbeDefinition? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.bundleIdentifiers = bundleIdentifiers
+        self.preferredPaths = preferredPaths
+        self.sourceRelativePath = sourceRelativePath
+        self.commitKeys = commitKeys
+        self.processNames = processNames
+        self.managedVersionProbe = managedVersionProbe
+    }
+}
+
+struct ManagedVersionProbeDefinition: Sendable {
+    let executableCandidates: [String]
+    let arguments: [String]
 }
 
 struct CLIProbeDefinition: Sendable {
@@ -85,6 +111,21 @@ struct ThemeProbeDefinition: Sendable {
     let name: String
     let relativeDirectory: String
     let allowedExtensions: Set<String>
+    let recursive: Bool
+
+    init(
+        id: String,
+        name: String,
+        relativeDirectory: String,
+        allowedExtensions: Set<String>,
+        recursive: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.relativeDirectory = relativeDirectory
+        self.allowedExtensions = allowedExtensions
+        self.recursive = recursive
+    }
 }
 
 struct InventoryService: Sendable {
@@ -201,6 +242,22 @@ struct InventoryService: Sendable {
                 commitKeys: [],
                 processNames: ["CodexVoice", "Codex Voice"]
             ),
+            AppProbeDefinition(
+                id: "kiro-crew",
+                name: "Kiro Crew",
+                bundleIdentifiers: ["com.amazon.kiro.crew"],
+                preferredPaths: [
+                    "~/Library/Application Support/KiroCrewInternal/KiroCrew.app",
+                    "/Applications/KiroCrew.app",
+                ],
+                sourceRelativePath: nil,
+                commitKeys: [],
+                processNames: ["KiroCrew"],
+                managedVersionProbe: ManagedVersionProbeDefinition(
+                    executableCandidates: ["~/.toolbox/bin/kirocrew"],
+                    arguments: ["--version"]
+                )
+            ),
         ]
 
         return await withTaskGroup(of: ComponentObservation.self) { group in
@@ -238,20 +295,45 @@ struct InventoryService: Sendable {
             info[$0] as? String
         }.first { !$0.isEmpty }
         let bundleID = info["CFBundleIdentifier"] as? String ?? "unknown bundle"
+        let managedVersion = await probeManagedVersion(definition.managedVersionProbe)
 
         return ComponentObservation(
             id: definition.id,
             name: definition.name,
             kind: .application,
             status: .installed,
-            installedVersion: info["CFBundleShortVersionString"] as? String,
+            installedVersion: managedVersion
+                ?? info["CFBundleShortVersionString"] as? String,
             build: info["CFBundleVersion"] as? String,
             installedRevision: installedCommit,
             sourceRevision: source?.revision,
             sourceBranch: source?.branch,
             sourceDirty: source?.dirty,
             isRunning: isRunning,
-            evidence: "Installed bundle \(bundleID); version read from its signed Info.plist."
+            evidence: managedVersion == nil
+                ? "Installed bundle \(bundleID); version read from its signed Info.plist."
+                : "Installed bundle \(bundleID); version returned by its managed executable."
+        )
+    }
+
+    private func probeManagedVersion(
+        _ definition: ManagedVersionProbeDefinition?
+    ) async -> String? {
+        guard let definition,
+              let executable = definition.executableCandidates
+                .map(expandedURL)
+                .first(where: { fileManager.isExecutableFile(atPath: $0.path) }) else {
+            return nil
+        }
+        let result = await commandRunner.run(
+            executable: executable,
+            arguments: definition.arguments,
+            environment: nil
+        )
+        guard result.exitCode == 0 else { return nil }
+        return parseVersion(
+            from: (result.standardOutput + " " + result.standardError)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
 
@@ -351,10 +433,11 @@ struct InventoryService: Sendable {
                 allowedExtensions: ["yaml", "yml"]
             ),
             ThemeProbeDefinition(
-                id: "meshclaw-themes",
-                name: "MeshClaw themes",
-                relativeDirectory: ".meshclaw/themes",
-                allowedExtensions: ["json"]
+                id: "kiro-crew-themes",
+                name: "Kiro Crew themes",
+                relativeDirectory: ".kiro/crew/themes",
+                allowedExtensions: ["json"],
+                recursive: true
             ),
         ]
 
@@ -377,22 +460,36 @@ struct InventoryService: Sendable {
             )
         }
 
-        let files = (try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ))?.filter {
+        let candidates: [URL]
+        if definition.recursive {
+            let enumerator = fileManager.enumerator(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            )
+            candidates = enumerator?.allObjects.compactMap { $0 as? URL } ?? []
+        } else {
+            candidates = (try? fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+        }
+        let files = candidates.filter {
             definition.allowedExtensions.contains($0.pathExtension.lowercased())
-        }.sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+                && ((try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false)
+        }.sorted {
+            relativePath(of: $0, under: directory) < relativePath(of: $1, under: directory)
+        }
 
-        let fingerprint = aggregateFingerprint(files: files)
+        let fingerprint = aggregateFingerprint(files: files, relativeTo: directory)
         return ComponentObservation(
             id: definition.id,
             name: definition.name,
             kind: .theme,
             status: files.isEmpty ? .missing : .installed,
             configurationFingerprint: fingerprint,
-            items: files.map(\.lastPathComponent),
+            items: files.map { relativePath(of: $0, under: directory) },
             evidence: "Fingerprint covers \(files.count) theme file(s); file contents are not published."
         )
     }
@@ -539,14 +636,14 @@ struct InventoryService: Sendable {
         return URL(fileURLWithPath: path)
     }
 
-    private func aggregateFingerprint(files: [URL]) -> String? {
+    private func aggregateFingerprint(files: [URL], relativeTo directory: URL) -> String? {
         guard !files.isEmpty else { return nil }
         var aggregate = Data()
         for file in files {
             guard let data = try? Data(contentsOf: file, options: [.mappedIfSafe]) else {
                 continue
             }
-            aggregate.append(Data(file.lastPathComponent.utf8))
+            aggregate.append(Data(relativePath(of: file, under: directory).utf8))
             aggregate.append(0)
             aggregate.append(Data(SHA256.hash(data: data)))
         }
@@ -554,6 +651,13 @@ struct InventoryService: Sendable {
         return SHA256.hash(data: aggregate)
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    private func relativePath(of file: URL, under directory: URL) -> String {
+        let root = directory.standardizedFileURL.path
+        let path = file.standardizedFileURL.path
+        guard path.hasPrefix(root + "/") else { return file.lastPathComponent }
+        return String(path.dropFirst(root.count + 1))
     }
 
     private func parseVersion(from output: String) -> String? {

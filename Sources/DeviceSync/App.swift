@@ -70,7 +70,7 @@ struct DeviceSyncApp: App {
                     print("snapshot: \(url.path)")
                 } else if adoptBaseline {
                     print("baseline: \(repository.manifestURL.path)")
-                    print("targets: \(read.manifest?.targets.count ?? 0)")
+                    print("targets: \(read.manifest?.activeTargets.count ?? 0)")
                 } else {
                     print("Device Sync \(DeviceSyncVersion.current): OK")
                     print("machine: \(snapshot.name) (\(snapshot.hostName))")

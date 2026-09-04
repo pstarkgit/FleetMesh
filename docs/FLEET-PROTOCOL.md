@@ -39,3 +39,7 @@ All writes use atomic replacement. Readers validate `schemaVersion`, decode
 each machine independently, and return per-file issues instead of treating a
 partial read as an empty healthy fleet.
 
+Component IDs have lifecycle semantics. Readers ignore retired IDs such as
+`meshclaw-themes`; active replacements use new IDs (`kiro-crew` and
+`kiro-crew-themes`) so historical evidence is never misrepresented as current
+Kiro Crew state.

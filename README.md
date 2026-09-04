@@ -20,9 +20,9 @@ flowchart LR
 ## What the first release tracks
 
 - ai-continuum CLI and source checkout
-- AuthBar, Stow, Murmr Voice, Model Bridge, Codex Desktop, Codex CLI, and
-  Codex Voice
-- Codex, Warp, and MeshClaw theme sets by filename and SHA-256 fingerprint
+- AuthBar, Stow, Murmr Voice, Model Bridge, Kiro Crew, Codex Desktop, Codex
+  CLI, and Codex Voice
+- Codex, Warp, and Kiro Crew theme sets by filename and SHA-256 fingerprint
 - harness-sync revision and local-change posture
 - macOS version, build, model identifier, architecture, and snapshot freshness
 
@@ -54,6 +54,10 @@ Headless verification:
 The installer registers a per-user LaunchAgent that publishes a snapshot at
 login and every six hours. `--adopt-baseline` is an explicit operator action;
 scheduled runs never change desired state.
+
+MeshClaw is retired. New writers publish Kiro Crew package/runtime and native
+theme evidence, and readers ignore the retired `meshclaw-themes` component ID
+if it appears in an older machine report or baseline.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for ownership and failure
 semantics, and [docs/FLEET-PROTOCOL.md](docs/FLEET-PROTOCOL.md) for the JSON
