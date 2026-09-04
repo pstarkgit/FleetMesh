@@ -42,6 +42,7 @@ struct RootView: View {
             // dark appearance gives default labels white foregrounds while the
             // canvas remains light, making machine and component names vanish.
             .environment(\.colorScheme, .light)
+            .foregroundColor(DSTheme.ink)
         }
         .navigationSplitViewStyle(.balanced)
         .tint(DSTheme.blue)
@@ -369,7 +370,7 @@ private struct MachineHero: View {
                 HStack(spacing: 8) {
                     Text(assessment.snapshot.name)
                         .font(.system(size: 23, weight: .bold, design: .rounded))
-                        .foregroundStyle(DSTheme.ink)
+                        .foregroundColor(DSTheme.ink)
                     if isCurrent {
                         Text("THIS MAC")
                             .font(.caption2.weight(.bold))
@@ -432,7 +433,7 @@ private struct DriftRow: View {
                 HStack {
                     Text(drift.name)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(DSTheme.ink)
+                        .foregroundColor(DSTheme.ink)
                     Text(drift.kind.label.uppercased())
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
                         .foregroundStyle(DSTheme.inkMuted)
@@ -530,7 +531,7 @@ private struct FlowStep: View {
             .frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.caption.weight(.semibold))
-                    .foregroundStyle(DSTheme.ink)
+                    .foregroundColor(DSTheme.ink)
                 Text(detail).font(.caption2).foregroundStyle(DSTheme.inkMuted)
             }
         }
@@ -620,7 +621,7 @@ private struct BootstrapStepRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(step.title)
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(DSTheme.ink)
+                    .foregroundColor(DSTheme.ink)
                 Text(step.detail)
                     .font(.caption)
                     .foregroundStyle(DSTheme.inkSoft)
@@ -792,7 +793,7 @@ private struct SectionTitle: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.system(size: 17, weight: .bold))
-                .foregroundStyle(DSTheme.ink)
+                .foregroundColor(DSTheme.ink)
             Text(subtitle).font(.caption).foregroundStyle(DSTheme.inkMuted)
         }
     }

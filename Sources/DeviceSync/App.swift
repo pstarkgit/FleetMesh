@@ -6,6 +6,12 @@ struct DeviceSyncApp: App {
     @State private var store = FleetStore()
 
     init() {
+        // Device Sync 0.1 uses a deliberately light evidence canvas. Pin the
+        // AppKit appearance too: setting only SwiftUI's colorScheme left native
+        // hosting layers in Aqua Dark, which turned bold primary labels white
+        // on the light canvas after a Developer ID install.
+        NSApplication.shared.appearance = NSAppearance(named: .aqua)
+
         let arguments = CommandLine.arguments
         if arguments.contains("--version") {
             print(DeviceSyncVersion.current)
@@ -25,6 +31,7 @@ struct DeviceSyncApp: App {
         WindowGroup {
             RootView(store: store)
                 .frame(minWidth: 1040, minHeight: 720)
+                .preferredColorScheme(.light)
                 .task { await store.start() }
         }
         .defaultSize(width: 1280, height: 820)
