@@ -1,7 +1,7 @@
 import Foundation
 
 enum ComponentLifecycle {
-    /// Component IDs that older Device Sync writers may still publish. They are
+    /// Component IDs that older FleetMesh writers may still publish. They are
     /// intentionally ignored rather than shown as optional software forever.
     static let retiredIDs: Set<String> = [
         "meshclaw-themes",
@@ -9,6 +9,17 @@ enum ComponentLifecycle {
 
     static func isActive(_ id: String) -> Bool {
         !retiredIDs.contains(id)
+    }
+
+    /// Persisted reports and baselines may carry a historical display name.
+    /// Stable IDs remain authoritative; current UI uses the canonical brand.
+    static func displayName(for id: String, fallback: String) -> String {
+        switch id {
+        case FleetMeshIdentity.componentID:
+            FleetMeshIdentity.productName
+        default:
+            fallback
+        }
     }
 }
 

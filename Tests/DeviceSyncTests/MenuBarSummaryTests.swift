@@ -65,6 +65,7 @@ struct MenuBarSummaryTests {
 
     @Test
     func statusItemPlacementSeedsOnlyItsOwnUnsetSlot() throws {
+        #expect(DeviceSyncStatusItemPlacement.autosaveName == "DeviceSync")
         let suiteName = "dev.starkpat.devicesync.tests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }

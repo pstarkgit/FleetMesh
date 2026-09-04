@@ -14,6 +14,18 @@ enum DSTheme {
     static let red = Color(red: 0.88, green: 0.23, blue: 0.25)
     static let purple = Color(red: 0.52, green: 0.31, blue: 0.90)
 
+    // Shared Aurora family identity, byte-for-byte with AuthBar, Stow, and
+    // Murmur's Aurora canvas. Operational colors above remain semantic; these
+    // three stops are reserved for FleetMesh brand surfaces.
+    static let auroraEmerald = Color(red: 0.063, green: 0.725, blue: 0.506) // #10B981
+    static let auroraCyan = Color(red: 0.133, green: 0.827, blue: 0.933) // #22D3EE
+    static let auroraIndigo = Color(red: 0.545, green: 0.361, blue: 0.965) // #8B5CF6
+    static let auroraGradient = LinearGradient(
+        colors: [auroraEmerald, auroraCyan, auroraIndigo],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+
     static func color(for verdict: FleetVerdict) -> Color {
         switch verdict {
         case .aligned: green

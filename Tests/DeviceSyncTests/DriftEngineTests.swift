@@ -117,7 +117,7 @@ struct DriftEngineTests {
         let reference = fixtureSnapshot(components: [fixtureComponent()])
         let extra = ComponentObservation(
             id: "device-sync",
-            name: "Device Sync",
+            name: "FleetMesh",
             kind: .application,
             status: .installed,
             installedVersion: "0.1.0",
@@ -133,6 +133,36 @@ struct DriftEngineTests {
         #expect(assessment.drifts.contains { $0.componentID == "device-sync" && $0.state == .notManaged })
         #expect(assessment.attentionCount == 0)
         #expect(assessment.verdict == .aligned)
+    }
+
+    @Test
+    func historicalDeviceSyncNamePresentsAsFleetMeshWithoutRewritingBaseline() {
+        let legacy = ComponentObservation(
+            id: "device-sync",
+            name: "Device Sync",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.1.3",
+            evidence: "Legacy writer"
+        )
+        let reference = fixtureSnapshot(components: [legacy])
+        let current = ComponentObservation(
+            id: "device-sync",
+            name: "FleetMesh",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.1.4",
+            evidence: "Current writer"
+        )
+
+        let manifest = FleetManifest(snapshot: reference)
+        let assessment = DriftEngine().assess(
+            snapshot: fixtureSnapshot(components: [current]),
+            manifest: manifest
+        )
+
+        #expect(manifest.target("device-sync")?.name == "Device Sync")
+        #expect(assessment.drifts.first { $0.componentID == "device-sync" }?.name == "FleetMesh")
     }
 
     @Test

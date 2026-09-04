@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.5 — 2026-09-04
+
+- Renamed the visible product and installed bundle to FleetMesh while retaining
+  all Device Sync fleet, process, launch-agent, bundle, and JSON identities.
+- Added the selected Fleet Bridge icon: two machine clusters connected through
+  one authority bridge in the shared Aurora emerald-cyan-indigo palette.
+- Replaced the generic cloud-sync glyph in the full app and command center with
+  the same scalable FleetMesh mark.
+- Applied the exact shared Aurora three-stop field to the full-app and menu-bar
+  brand tiles so the installed icon and both native surfaces cannot color-drift.
+- Made the Settings hierarchy explicit: `fleet-manifest.json` is the shared
+  in-scope authority, machine reports are evidence, and local state is a pointer.
+- Prevented a first launch without OneDrive from silently seeding a second local
+  baseline; initial seeding is now limited to the canonical shared fleet path.
+
+## 0.1.4 — 2026-09-04
+
+- Renamed the customer-facing product and installed app to FleetForge across
+  the full app, menu-bar command center, Doctor, Bootstrap, CLI, and docs.
+- Added a transactional migration from `/Applications/Device Sync.app` to
+  `/Applications/FleetForge.app`, with rollback if the new app fails its check.
+- Preserved the existing bundle ID, executable, component ID, state and fleet
+  folders, snapshot schema field, LaunchAgent identity, and menu-bar slot so
+  enrolled Macs and fleet history continue without reset or duplication.
+- Canonicalized the historical `device-sync` display name to FleetForge while
+  reading older baselines and reports, without mutating their persisted JSON.
+
 ## 0.1.3 — 2026-09-04
 
 - Added a native menu-bar command center alongside the singleton full app,

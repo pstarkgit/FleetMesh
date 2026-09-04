@@ -155,7 +155,7 @@ enum FleetRepositoryError: LocalizedError {
         case .invalidMachineID:
             "The machine report has an invalid privacy-preserving identifier."
         case .futureSchema(let version):
-            "Schema version \(version) is newer than this Device Sync build supports."
+            "Schema version \(version) is newer than this FleetMesh build supports."
         }
     }
 }

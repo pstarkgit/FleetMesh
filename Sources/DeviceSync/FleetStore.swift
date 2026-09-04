@@ -125,7 +125,7 @@ final class FleetStore {
 
     func chooseFleetFolder() async {
         let panel = NSOpenPanel()
-        panel.title = "Choose Device Sync Fleet Folder"
+        panel.title = "Choose FleetMesh Fleet Folder"
         panel.prompt = "Use Folder"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -197,7 +197,7 @@ final class FleetStore {
                     componentID: componentID,
                     componentName: originalName,
                     outcome: .protected,
-                    summary: "Doctor can repair only the Mac on which it is running. Open Device Sync on the selected Mac to continue.",
+                    summary: "Doctor can repair only the Mac on which it is running. Open FleetMesh on the selected Mac to continue.",
                     output: nil,
                     startedAt: startedAt
                 )
@@ -306,7 +306,7 @@ final class FleetStore {
                 componentID: componentID,
                 componentName: drift.name,
                 outcome: .running,
-                summary: "Running \(finding.title), then Device Sync will re-scan installed state.",
+                summary: "Running \(finding.title), then FleetMesh will re-scan installed state.",
                 output: nil,
                 startedAt: startedAt,
                 finishedAt: nil
@@ -420,7 +420,12 @@ final class FleetStore {
         _ = try repository.publish(snapshot)
 
         var read = repository.load()
-        if read.manifest == nil && !repository.manifestExists {
+        if read.manifest == nil
+            && !repository.manifestExists
+            && LocalStateRepository.maySeedInitialManifest(
+                state: state,
+                homeURL: localRepository.homeURL
+            ) {
             let seeded = FleetManifest(snapshot: snapshot)
             try repository.saveManifest(seeded)
             read = repository.load()

@@ -24,10 +24,34 @@ struct LocalStateRepository: Sendable {
                 for: .applicationSupportDirectory,
                 in: .userDomainMask
             ).first ?? homeURL.appendingPathComponent("Library/Application Support")
-            self.stateURL = support
-                .appendingPathComponent("Device Sync", isDirectory: true)
-                .appendingPathComponent("local-state.json")
+            self.stateURL = Self.defaultStateURL(applicationSupportURL: support)
         }
+    }
+
+    static func defaultStateURL(applicationSupportURL: URL) -> URL {
+        applicationSupportURL
+            .appendingPathComponent(
+                FleetMeshIdentity.legacyStateDirectoryName,
+                isDirectory: true
+            )
+            .appendingPathComponent("local-state.json")
+    }
+
+    static func canonicalSharedFleetURL(homeURL: URL) -> URL {
+        homeURL
+            .appendingPathComponent(
+                "Library/CloudStorage/OneDrive-amazon.com",
+                isDirectory: true
+            )
+            .appendingPathComponent(
+                FleetMeshIdentity.legacyFleetDirectoryName,
+                isDirectory: true
+            )
+    }
+
+    static func maySeedInitialManifest(state: LocalDeviceState, homeURL: URL) -> Bool {
+        URL(fileURLWithPath: state.fleetRootPath, isDirectory: true).standardizedFileURL
+            == canonicalSharedFleetURL(homeURL: homeURL).standardizedFileURL
     }
 
     func loadOrCreate() throws -> LocalDeviceState {
@@ -75,12 +99,12 @@ struct LocalStateRepository: Sendable {
     }
 
     private func defaultFleetRoot() -> URL {
-        let oneDrive = homeURL.appendingPathComponent(
+        let oneDriveRoot = homeURL.appendingPathComponent(
             "Library/CloudStorage/OneDrive-amazon.com",
             isDirectory: true
         )
-        if fileManager.fileExists(atPath: oneDrive.path) {
-            return oneDrive.appendingPathComponent("Device Sync", isDirectory: true)
+        if fileManager.fileExists(atPath: oneDriveRoot.path) {
+            return Self.canonicalSharedFleetURL(homeURL: homeURL)
         }
 
         return stateURL.deletingLastPathComponent()

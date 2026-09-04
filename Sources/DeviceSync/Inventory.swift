@@ -179,15 +179,31 @@ struct InventoryService: Sendable {
     }
 
     private func probeApplications() async -> [ComponentObservation] {
-        let definitions = [
+        let definitions = Self.applicationDefinitions
+
+        return await withTaskGroup(of: ComponentObservation.self) { group in
+            for definition in definitions {
+                group.addTask { await probeApplication(definition) }
+            }
+            var observations: [ComponentObservation] = []
+            for await observation in group { observations.append(observation) }
+            return observations
+        }
+    }
+
+    static let applicationDefinitions = [
             AppProbeDefinition(
-                id: "device-sync",
-                name: "Device Sync",
-                bundleIdentifiers: ["dev.starkpat.devicesync"],
-                preferredPaths: ["/Applications/Device Sync.app"],
+                id: FleetMeshIdentity.componentID,
+                name: FleetMeshIdentity.productName,
+                bundleIdentifiers: [FleetMeshIdentity.bundleIdentifier],
+                preferredPaths: [
+                    FleetMeshIdentity.installedAppPath,
+                    FleetMeshIdentity.formerFleetForgeAppPath,
+                    FleetMeshIdentity.legacyInstalledAppPath,
+                ],
                 sourceRelativePath: "code/device-sync",
                 commitKeys: ["DSCommit"],
-                processNames: ["DeviceSync"]
+                processNames: [FleetMeshIdentity.executableName]
             ),
             AppProbeDefinition(
                 id: "authbar",
@@ -263,16 +279,6 @@ struct InventoryService: Sendable {
                 )
             ),
         ]
-
-        return await withTaskGroup(of: ComponentObservation.self) { group in
-            for definition in definitions {
-                group.addTask { await probeApplication(definition) }
-            }
-            var observations: [ComponentObservation] = []
-            for await observation in group { observations.append(observation) }
-            return observations
-        }
-    }
 
     private func probeApplication(_ definition: AppProbeDefinition) async -> ComponentObservation {
         let appURL = locateApplication(definition)

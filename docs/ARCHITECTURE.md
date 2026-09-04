@@ -2,7 +2,7 @@
 
 ## Verdict
 
-Device Sync is a control plane, not a second installer framework. It observes
+FleetMesh is a control plane, not a second installer framework. It observes
 real installed artifacts, stores only redacted fleet evidence, calculates
 drift against one baseline, and delegates convergence to the component that
 already owns it.
@@ -12,7 +12,7 @@ flowchart TB
     subgraph Mac[One Mac]
       P[Read-only probes] --> O[Observation snapshot]
       L[Random local machine ID] --> O
-      UI[Full Device Sync app] --> P
+      UI[Full FleetMesh app] --> P
       MB[Menu-bar command center] --> P
       MB --> UI
     end
@@ -45,6 +45,12 @@ flowchart TB
 | AI continuity databases | ai-continuum local storage |
 | Durable human/agent context | BrainVault/StarkBrain and repository docs |
 
+On a new Mac, the OneDrive-backed fleet folder must be available before the
+first authoritative scan. FleetMesh then reads `fleet-manifest.json` for the
+in-scope catalog and desired versions, creates a new random local machine ID,
+and publishes that Mac's observed evidence under `machines/`. A machine report
+never defines scope, and a scheduled snapshot never replaces the manifest.
+
 ## Native surfaces
 
 The menu bar and full window are two views over one in-process `FleetStore`.
@@ -55,8 +61,18 @@ menu bar updates shared navigation before activating that window, so there is
 no second dashboard or divergent repair state.
 
 The command center is hosted in SwiftUI but anchored by a named native
-`NSStatusItem`. Device Sync seeds only its own initial placement preference and
+`NSStatusItem`. FleetMesh seeds only its own initial placement preference and
 preserves later user placement; it never rearranges another app's menu-bar item.
+
+## Rename compatibility
+
+FleetMesh is the visible product and `/Applications/FleetMesh.app` is its
+canonical installation. Existing compatibility authorities remain unchanged:
+bundle ID `dev.starkpat.devicesync`, executable `DeviceSync`, component ID
+`device-sync`, JSON field `deviceSyncVersion`, `Device Sync` Application
+Support/shared-fleet folders, LaunchAgent `dev.starkpat.devicesync.snapshot`,
+and status-item autosave name `DeviceSync`. These are migration boundaries,
+not stale branding to clean up.
 
 ## Failure semantics
 

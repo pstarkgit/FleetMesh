@@ -11,9 +11,9 @@
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Device Sync</string>
+    <string>FleetMesh</string>
     <key>CFBundleDisplayName</key>
-    <string>Device Sync</string>
+    <string>FleetMesh</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -36,4 +36,3 @@
     <string></string>
 </dict>
 </plist>
-

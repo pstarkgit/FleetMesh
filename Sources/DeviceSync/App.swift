@@ -8,7 +8,7 @@ struct DeviceSyncApp: App {
     @State private var appState = DeviceSyncAppState.shared
 
     init() {
-        // Device Sync 0.1 uses a deliberately light evidence canvas. Pin the
+        // FleetMesh uses a deliberately light evidence canvas. Pin the
         // AppKit appearance too: setting only SwiftUI's colorScheme left native
         // hosting layers in Aqua Dark, which turned bold primary labels white
         // on the light canvas after a Developer ID install.
@@ -16,7 +16,7 @@ struct DeviceSyncApp: App {
 
         let arguments = CommandLine.arguments
         if arguments.contains("--version") {
-            print(DeviceSyncVersion.current)
+            print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current)")
             exit(0)
         }
         if arguments.contains("--check")
@@ -30,7 +30,7 @@ struct DeviceSyncApp: App {
     }
 
     var body: some Scene {
-        Window("Device Sync", id: DeviceSyncWindow.main) {
+        Window(FleetMeshIdentity.productName, id: DeviceSyncWindow.main) {
             RootView(store: appState.store, navigation: appState.navigation)
                 .frame(minWidth: 1040, minHeight: 720)
                 .preferredColorScheme(.light)
@@ -64,7 +64,13 @@ struct DeviceSyncApp: App {
                     rootURL: URL(fileURLWithPath: state.fleetRootPath, isDirectory: true)
                 )
                 let url = try repository.publish(snapshot)
-                if adoptBaseline || (!snapshotOnly && !repository.manifestExists) {
+                if adoptBaseline
+                    || (!snapshotOnly
+                        && !repository.manifestExists
+                        && LocalStateRepository.maySeedInitialManifest(
+                            state: state,
+                            homeURL: localRepository.homeURL
+                        )) {
                     try repository.saveManifest(FleetManifest(snapshot: snapshot))
                 }
                 let read = repository.load()
@@ -75,14 +81,14 @@ struct DeviceSyncApp: App {
                     print("baseline: \(repository.manifestURL.path)")
                     print("targets: \(read.manifest?.activeTargets.count ?? 0)")
                 } else {
-                    print("Device Sync \(DeviceSyncVersion.current): OK")
+                    print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current): OK")
                     print("machine: \(snapshot.name) (\(snapshot.hostName))")
                     print("fleet folder: \(repository.rootURL.path)")
                     print("components: \(snapshot.components.filter { $0.status == .installed }.count) installed, \(snapshot.components.filter { $0.status == .missing }.count) missing")
                     print("fleet: \(read.machines.count) report(s), \(assessment.attentionCount) attention item(s), \(read.issues.count) read issue(s)")
                 }
             } catch {
-                fputs("Device Sync check failed: \(error.localizedDescription)\n", stderr)
+                fputs("\(FleetMeshIdentity.productName) check failed: \(error.localizedDescription)\n", stderr)
                 exit(1)
             }
         }
@@ -131,7 +137,9 @@ final class DeviceSyncAppState {
         // Opening a SwiftUI scene is asynchronous. Bring the singleton forward
         // on the next run loop and restore it if it was minimized.
         DispatchQueue.main.async {
-            guard let window = NSApp.windows.first(where: { $0.title == "Device Sync" }) else {
+            guard let window = NSApp.windows.first(where: {
+                $0.title == FleetMeshIdentity.productName
+            }) else {
                 return
             }
             window.deminiaturize(nil)

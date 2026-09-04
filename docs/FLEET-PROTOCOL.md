@@ -3,7 +3,7 @@
 The fleet folder contains only:
 
 ```text
-Device Sync/
+Device Sync/  # legacy compatibility folder retained by FleetMesh
 ├── fleet-manifest.json
 └── machines/
     ├── <random-machine-id>.json
@@ -43,3 +43,7 @@ Component IDs have lifecycle semantics. Readers ignore retired IDs such as
 `meshclaw-themes`; active replacements use new IDs (`kiro-crew` and
 `kiro-crew-themes`) so historical evidence is never misrepresented as current
 Kiro Crew state.
+
+The `device-sync` component ID and `deviceSyncVersion` snapshot key also remain
+stable after the FleetMesh product rename so older and newer writers describe
+the same component and decode the same fleet history.
