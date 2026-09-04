@@ -32,6 +32,7 @@ struct DeviceSyncApp: App {
             RootView(store: store)
                 .frame(minWidth: 1040, minHeight: 720)
                 .preferredColorScheme(.light)
+                .background(AquaWindowAppearance())
                 .task { await store.start() }
         }
         .defaultSize(width: 1280, height: 820)
@@ -84,5 +85,37 @@ struct DeviceSyncApp: App {
         }
         semaphore.wait()
         exit(0)
+    }
+}
+
+/// Pins the actual AppKit window to Aqua once SwiftUI has created it.
+///
+/// `preferredColorScheme(.light)` controls SwiftUI's environment but does not
+/// reliably change the native `NSWindow`/toolbar appearance when the system is
+/// in Dark Mode. That mismatch was visible in acceptance captures: the light
+/// canvas rendered correctly while native and nested primary labels stayed
+/// white. The window is the authoritative appearance boundary.
+private struct AquaWindowAppearance: NSViewRepresentable {
+    func makeNSView(context: Context) -> AquaWindowSentinel {
+        AquaWindowSentinel()
+    }
+
+    func updateNSView(_ nsView: AquaWindowSentinel, context: Context) {
+        nsView.applyAppearance()
+    }
+}
+
+@MainActor
+private final class AquaWindowSentinel: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyAppearance()
+    }
+
+    func applyAppearance() {
+        guard let aqua = NSAppearance(named: .aqua) else { return }
+        NSApp.appearance = aqua
+        window?.appearance = aqua
+        window?.contentView?.appearance = aqua
     }
 }
