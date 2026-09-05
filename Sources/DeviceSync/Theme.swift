@@ -25,6 +25,15 @@ enum DSTheme {
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
+    static let auroraFieldGradient = LinearGradient(
+        colors: [
+            Color(red: 0.03, green: 0.25, blue: 0.28),
+            Color(red: 0.02, green: 0.16, blue: 0.30),
+            Color(red: 0.17, green: 0.10, blue: 0.34),
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
 
     static func color(for verdict: FleetVerdict) -> Color {
         switch verdict {
@@ -43,6 +52,7 @@ enum DSTheme {
         case .unknown: inkMuted
         case .localChanges: purple
         case .notManaged: blue
+        case .notApplicable: inkMuted
         }
     }
 }

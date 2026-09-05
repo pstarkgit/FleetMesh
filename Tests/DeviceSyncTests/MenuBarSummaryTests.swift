@@ -25,7 +25,7 @@ struct MenuBarSummaryTests {
 
         #expect(value.headline == "Scanning this Mac")
         #expect(value.statusSymbol == "arrow.triangle.2.circlepath")
-        #expect(value.machineLabel == "3 machines")
+        #expect(value.machineLabel == "3 devices")
         #expect(value.attentionLabel == "4 attention items")
     }
 
@@ -62,6 +62,16 @@ struct MenuBarSummaryTests {
         navigation.open(.doctor)
 
         #expect(navigation.section == .doctor)
+    }
+
+    @Test
+    @MainActor
+    func sharedNavigationCanRouteMenuBarToDevices() {
+        let navigation = AppNavigation()
+
+        navigation.open(.devices)
+
+        #expect(navigation.section == .devices)
     }
 
     @Test

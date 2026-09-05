@@ -1,58 +1,129 @@
-# Fleet protocol v1
+# Fleet protocol
 
-The fleet folder contains only:
+## Verdict
+
+FleetMesh stores a small JSON control plane in the legacy `Device Sync` fleet
+folder. Manifest schema v2 is desired state. Machine snapshot schema v1 remains
+the evidence format, with additive platform/capability fields that older readers
+can ignore.
 
 ```text
-Device Sync/  # legacy compatibility folder retained by FleetMesh
+Device Sync/
 ├── fleet-manifest.json
 └── machines/
     ├── <random-machine-id>.json
     └── ...
 ```
 
-`fleet-manifest.json` is the desired baseline. The app seeds it once from the
-first observed Mac when no manifest exists. Every later replacement is an
-explicit in-app action.
+All writes use atomic replacement. Readers validate schema versions, decode each
+machine independently, tolerate older writers, surface malformed files as
+issues, and never treat partial cloud availability as a healthy empty fleet.
 
-Item-level add/remove actions are also explicit desired-state changes. They
-capture fresh evidence, preserve every unrelated target, assign a new manifest
-revision, and compare the previously displayed revision with the file currently
-on disk before atomic replacement. A stale writer fails closed and reloads.
+## Manifest schema v2
 
-Removing a target does not remove its observation from machine reports. Readers
-may present that evidence as available/unmanaged in Settings, but it contributes
-no drift, Bootstrap work, Doctor finding, or attention count.
+`fleet-manifest.json` is the desired-state authority. It contains:
 
-Each machine owns exactly one snapshot file. Its stable ID is a random UUID
-stored in local Application Support; it is not derived from a serial number,
-hardware UUID, account, or hostname.
+- `schemaVersion: 2`
+- `revision`, `updatedAt`, and `updatedByMachineID`
+- `targets[]`: active and available component defaults, desired versions,
+  revisions, fingerprints, platform applicability, and default managed state
+- `devices[]`: explicit device policies
 
-## Data classification
+Device policy records contain:
 
-Allowed:
+- random `machineID`
+- redacted display name
+- platform: `macos`, `linux`, or `unknown`
+- role: `workstation`, `server`, or `cloud-desktop`
+- capabilities: `graphical-session`, `macos-applications`, `menu-bar`,
+  `launchd`, `systemd`, `shell`, and/or `configuration-files`
+- enrollment: Pending when absent from the manifest, In fleet when enrolled, or
+  Removed when explicitly excluded
+- per-device component overrides: `inherit`, `required`, or `excluded`
 
-- human-readable machine name and local hostname
-- Mac model identifier, architecture, macOS version/build
-- product version, build, installed revision, and configuration fingerprint
+`inherit` follows the fleet default. `required` brings an item into scope for
+that device even when it is not managed by default. `excluded` keeps the item
+out of posture, Bootstrap, and Doctor for that device. Incompatible inherited
+items are not applicable rather than unhealthy.
+
+Manifest changes are explicit desired-state actions. Enrolling or removing a
+device, changing its role, changing fleet defaults, and setting per-device
+scope all assign a new revision and must compare against the currently displayed
+revision before replacing the file. A stale writer fails closed and reloads.
+
+## Snapshot schema v1 with additive device fields
+
+Each device owns exactly one `machines/<random-machine-id>.json` snapshot. The
+stable ID is a random UUID stored in local Application Support; it is not
+derived from serial number, hardware UUID, account, hostname, or SSH endpoint.
+
+Snapshot schema v1 remains the shared evidence contract. FleetMesh 0.1.7 adds
+platform and capabilities as optional/additive fields. Device role remains in
+manifest policy. Older readers can
+ignore them. New readers must treat missing fields as unknown or legacy evidence,
+not as proof that a device is healthy or Mac-only.
+
+Snapshots may contain:
+
+- human-readable redacted machine name and local hostname where safe
+- platform, capabilities, OS family/version/build, model identifier, and
+  architecture
+- product version, build, installed revision, source revision, and configuration
+  fingerprint
 - theme filenames and aggregate SHA-256 fingerprint
+- source dirty/clean posture
+- observation status: installed, missing, or unknown
+- snapshot freshness and FleetMesh `deviceSyncVersion`
+
+Snapshots deliberately remain observations. They do not enroll a device, change
+scope, update desired versions, or repair anything.
+
+## Local-only SSH endpoints
+
+FleetMesh can add a Linux device by SSH from a controller Mac. The destination
+host or SSH config alias is controller-private state stored only in the legacy
+local Application Support file. It is not synced and is never written to
+`fleet-manifest.json` or `machines/*.json`.
+
+The SSH probe uses `/usr/bin/ssh`, existing SSH config/agent trust, strict
+destination validation, an 18-second bound, and a fixed read-only script. The
+shared fleet protocol never carries executable commands, and FleetMesh never
+repairs a remote machine over SSH.
+
+## Redaction rules
+
+Allowed in shared JSON:
+
+- random machine IDs
+- redacted display names and safe local host labels
+- platform, capabilities, OS version/build, model identifier, architecture
+- managed component IDs, versions, revisions, status, and fingerprints
+- theme filenames plus aggregate SHA-256 fingerprints
 - whether a known source checkout has uncommitted work
 
-Forbidden:
+Forbidden in shared JSON:
 
 - serial number, platform UUID, provisioning UDID, MAC address
-- username or absolute home/source paths
-- raw settings, prompts, transcripts, databases, logs, or theme contents
+- username, account name, absolute home path, or absolute source path
+- SSH endpoint, SSH alias, SSH username, key path, or known-host material
 - credentials, cookies, OAuth material, tokens, certificates, or Keychain data
+- raw settings, prompts, transcripts, logs, databases, sockets, or theme contents
+- live SQLite, WAL, shm, or ai-continuum database copies
 
-All writes use atomic replacement. Readers validate `schemaVersion`, decode
-each machine independently, and return per-file issues instead of treating a
-partial read as an empty healthy fleet.
+Missing or unreadable evidence is encoded as unknown/missing and surfaced. It is
+never converted to green health.
+
+## Component lifecycle
 
 Component IDs have lifecycle semantics. Readers ignore retired IDs such as
-`meshclaw-themes`; active replacements use new IDs (`kiro-crew` and
-`kiro-crew-themes`) so historical evidence is never misrepresented as current
-Kiro Crew state.
+`meshclaw-themes`; active replacements use current IDs such as `kiro-crew`
+and `kiro-crew-themes` so historical MeshClaw evidence is never represented as
+current Kiro Crew state.
 
-The `device-sync` component ID and `deviceSyncVersion` snapshot key also remain
-stable after the FleetMesh product rename so older and newer writers describe
-the same component and decode the same fleet history.
+Codex Voice remains observable if installed, but it is outside the managed daily
+baseline. Its presence should not create Bootstrap work, Doctor action, or fleet
+drift unless a user explicitly changes scope.
+
+The `device-sync` component ID and `deviceSyncVersion` snapshot key remain
+stable after the FleetMesh rename so older and newer writers describe the same
+component and decode the same fleet history.

@@ -41,6 +41,71 @@ enum ComponentKind: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum DevicePlatform: String, Codable, CaseIterable, Sendable {
+    case macOS = "macos"
+    case linux
+    case unknown
+
+    var label: String {
+        switch self {
+        case .macOS: "Mac"
+        case .linux: "Linux"
+        case .unknown: "Unknown platform"
+        }
+    }
+}
+
+enum DeviceRole: String, Codable, CaseIterable, Sendable {
+    case workstation
+    case server
+    case cloudDesktop = "cloud-desktop"
+
+    var label: String {
+        switch self {
+        case .workstation: "Workstation"
+        case .server: "Server"
+        case .cloudDesktop: "Cloud desktop"
+        }
+    }
+
+    static func suggested(for platform: DevicePlatform) -> DeviceRole {
+        platform == .linux ? .server : .workstation
+    }
+}
+
+enum DeviceCapability: String, Codable, CaseIterable, Hashable, Sendable {
+    case graphicalSession = "graphical-session"
+    case macOSApplications = "macos-applications"
+    case menuBar = "menu-bar"
+    case launchd
+    case systemd
+    case shell
+    case configurationFiles = "configuration-files"
+
+    var label: String {
+        switch self {
+        case .graphicalSession: "GUI"
+        case .macOSApplications: "Mac apps"
+        case .menuBar: "Menu bar"
+        case .launchd: "launchd"
+        case .systemd: "systemd"
+        case .shell: "Shell"
+        case .configurationFiles: "Config files"
+        }
+    }
+
+    static func defaults(for platform: DevicePlatform) -> [DeviceCapability] {
+        switch platform {
+        case .macOS:
+            [.graphicalSession, .macOSApplications, .menuBar, .launchd, .shell, .configurationFiles]
+        case .linux:
+            [.systemd, .shell, .configurationFiles]
+        case .unknown:
+            []
+        }
+    }
+}
+
 enum ObservationStatus: String, Codable, Sendable {
     case installed
     case missing
@@ -101,6 +166,8 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
 }
 
 struct MachineSnapshot: Codable, Identifiable, Hashable, Sendable {
+    // Platform and capability fields are additive. Keeping the snapshot wire
+    // version at v1 lets older FleetMesh readers safely ignore those keys.
     static let currentSchemaVersion = 1
 
     let schemaVersion: Int
@@ -111,6 +178,8 @@ struct MachineSnapshot: Codable, Identifiable, Hashable, Sendable {
     let architecture: String
     let osVersion: String
     let osBuild: String
+    let platform: DevicePlatform?
+    let capabilities: [DeviceCapability]?
     let capturedAt: Date
     let deviceSyncVersion: String
     let components: [ComponentObservation]
@@ -125,6 +194,8 @@ struct MachineSnapshot: Codable, Identifiable, Hashable, Sendable {
         architecture: String,
         osVersion: String,
         osBuild: String,
+        platform: DevicePlatform = .macOS,
+        capabilities: [DeviceCapability]? = nil,
         capturedAt: Date = Date(),
         deviceSyncVersion: String = DeviceSyncVersion.current,
         components: [ComponentObservation]
@@ -137,6 +208,9 @@ struct MachineSnapshot: Codable, Identifiable, Hashable, Sendable {
         self.architecture = architecture
         self.osVersion = osVersion
         self.osBuild = osBuild
+        self.platform = platform
+        self.capabilities = (capabilities ?? DeviceCapability.defaults(for: platform))
+            .sorted { $0.rawValue < $1.rawValue }
         self.capturedAt = capturedAt
         self.deviceSyncVersion = deviceSyncVersion
         self.components = components
@@ -145,6 +219,15 @@ struct MachineSnapshot: Codable, Identifiable, Hashable, Sendable {
     func component(_ id: String) -> ComponentObservation? {
         components.first { $0.id == id }
     }
+
+    var effectivePlatform: DevicePlatform {
+        // Schema-v1 reports were emitted only by the native Mac app.
+        platform ?? .macOS
+    }
+
+    var effectiveCapabilities: Set<DeviceCapability> {
+        Set(capabilities ?? DeviceCapability.defaults(for: effectivePlatform))
+    }
 }
 
 struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
@@ -152,26 +235,314 @@ struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
     let name: String
     let kind: ComponentKind
     let required: Bool
+    let defaultManaged: Bool?
     let expectedVersion: String?
     let expectedInstalledRevision: String?
     let expectedSourceRevision: String?
     let expectedConfigurationFingerprint: String?
+    let supportedPlatforms: [DevicePlatform]?
+    let requiredCapabilities: [DeviceCapability]?
 
-    init(observation: ComponentObservation, required: Bool = true) {
+    init(
+        observation: ComponentObservation,
+        required: Bool = true,
+        defaultManaged: Bool = true,
+        platform: DevicePlatform = .macOS
+    ) {
         id = observation.id
         name = observation.name
         kind = observation.kind
         self.required = required
+        self.defaultManaged = defaultManaged
         expectedVersion = observation.installedVersion
         expectedInstalledRevision = observation.installedRevision
         expectedSourceRevision = observation.sourceRevision
         expectedConfigurationFingerprint = observation.configurationFingerprint
+        supportedPlatforms = Self.supportedPlatforms(
+            for: observation.id,
+            observedOn: platform
+        )
+        requiredCapabilities = []
     }
+
+    var isManagedByDefault: Bool { defaultManaged ?? true }
+
+    func applicability(to snapshot: MachineSnapshot) -> ComponentApplicability {
+        applicability(
+            platform: snapshot.effectivePlatform,
+            capabilities: snapshot.effectiveCapabilities
+        )
+    }
+
+    func applicability(
+        platform: DevicePlatform,
+        capabilities: Set<DeviceCapability>
+    ) -> ComponentApplicability {
+        let platforms = supportedPlatforms ?? Self.supportedPlatforms(
+            for: id,
+            observedOn: .macOS
+        )
+        guard platforms.contains(platform) else {
+            return ComponentApplicability(
+                isApplicable: false,
+                reason: "\(name) supports \(platforms.map(\.label).joined(separator: ", ")), not \(platform.label)."
+            )
+        }
+
+        let required = Set(requiredCapabilities ?? []).union(Self.capabilityRequirements(
+            for: kind,
+            platform: platform
+        ))
+        let missing = required.subtracting(capabilities)
+            .sorted { $0.rawValue < $1.rawValue }
+        guard missing.isEmpty else {
+            return ComponentApplicability(
+                isApplicable: false,
+                reason: "This device does not report: \(missing.map(\.label).joined(separator: ", "))."
+            )
+        }
+        return .applicable
+    }
+
+    func normalizedForCurrentSchema() -> ManifestTarget {
+        ManifestTarget(
+            id: id,
+            name: name,
+            kind: kind,
+            required: required,
+            defaultManaged: isManagedByDefault,
+            expectedVersion: expectedVersion,
+            expectedInstalledRevision: expectedInstalledRevision,
+            expectedSourceRevision: expectedSourceRevision,
+            expectedConfigurationFingerprint: expectedConfigurationFingerprint,
+            supportedPlatforms: supportedPlatforms ?? Self.supportedPlatforms(
+                for: id,
+                observedOn: .macOS
+            ),
+            requiredCapabilities: requiredCapabilities ?? []
+        )
+    }
+
+    func settingDefaultManaged(_ managed: Bool) -> ManifestTarget {
+        let normalized = normalizedForCurrentSchema()
+        return ManifestTarget(
+            id: normalized.id,
+            name: normalized.name,
+            kind: normalized.kind,
+            required: normalized.required,
+            defaultManaged: managed,
+            expectedVersion: normalized.expectedVersion,
+            expectedInstalledRevision: normalized.expectedInstalledRevision,
+            expectedSourceRevision: normalized.expectedSourceRevision,
+            expectedConfigurationFingerprint: normalized.expectedConfigurationFingerprint,
+            supportedPlatforms: normalized.supportedPlatforms,
+            requiredCapabilities: normalized.requiredCapabilities
+        )
+    }
+
+    private init(
+        id: String,
+        name: String,
+        kind: ComponentKind,
+        required: Bool,
+        defaultManaged: Bool?,
+        expectedVersion: String?,
+        expectedInstalledRevision: String?,
+        expectedSourceRevision: String?,
+        expectedConfigurationFingerprint: String?,
+        supportedPlatforms: [DevicePlatform]?,
+        requiredCapabilities: [DeviceCapability]?
+    ) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.required = required
+        self.defaultManaged = defaultManaged
+        self.expectedVersion = expectedVersion
+        self.expectedInstalledRevision = expectedInstalledRevision
+        self.expectedSourceRevision = expectedSourceRevision
+        self.expectedConfigurationFingerprint = expectedConfigurationFingerprint
+        self.supportedPlatforms = supportedPlatforms
+        self.requiredCapabilities = requiredCapabilities
+    }
+
+    private static func capabilityRequirements(
+        for kind: ComponentKind,
+        platform: DevicePlatform
+    ) -> [DeviceCapability] {
+        switch kind {
+        case .application:
+            platform == .macOS ? [.graphicalSession, .macOSApplications] : [.graphicalSession]
+        case .commandLineTool:
+            [.shell]
+        case .service:
+            platform == .macOS ? [.launchd] : [.systemd]
+        case .configuration, .theme:
+            [.configurationFiles]
+        }
+    }
+
+    private static func supportedPlatforms(
+        for componentID: String,
+        observedOn platform: DevicePlatform
+    ) -> [DevicePlatform] {
+        switch componentID {
+        case "ai-continuum", "codex-cli", "harness-sync":
+            [.macOS, .linux]
+        default:
+            [platform]
+        }
+    }
+}
+
+struct ComponentApplicability: Hashable, Sendable {
+    static let applicable = ComponentApplicability(isApplicable: true, reason: "Supported on this device.")
+
+    let isApplicable: Bool
+    let reason: String
+}
+
+enum DeviceEnrollment: String, Codable, Sendable {
+    case enrolled
+    case excluded
+}
+
+enum DeviceEnrollmentStatus: String, Sendable {
+    case pending
+    case enrolled
+    case excluded
+
+    var label: String {
+        switch self {
+        case .pending: "Pending"
+        case .enrolled: "In fleet"
+        case .excluded: "Removed"
+        }
+    }
+}
+
+enum DeviceScopeSelection: String, Codable, CaseIterable, Sendable {
+    case inherit
+    case required
+    case excluded
+
+    var label: String {
+        switch self {
+        case .inherit: "Inherit fleet default"
+        case .required: "Required on this device"
+        case .excluded: "Excluded from this device"
+        }
+    }
+}
+
+struct DeviceComponentOverride: Codable, Identifiable, Hashable, Sendable {
+    let componentID: String
+    let selection: DeviceScopeSelection
+
+    var id: String { componentID }
+}
+
+struct FleetDevicePolicy: Codable, Identifiable, Hashable, Sendable {
+    let machineID: String
+    let displayName: String
+    let role: DeviceRole
+    let enrollment: DeviceEnrollment
+    let overrides: [DeviceComponentOverride]
+    let platform: DevicePlatform?
+    let capabilities: [DeviceCapability]?
+
+    var id: String { machineID }
+
+    init(
+        snapshot: MachineSnapshot,
+        role: DeviceRole? = nil,
+        enrollment: DeviceEnrollment = .enrolled,
+        overrides: [DeviceComponentOverride] = []
+    ) {
+        machineID = snapshot.machineID
+        displayName = snapshot.name
+        self.role = role ?? DeviceRole.suggested(for: snapshot.effectivePlatform)
+        self.enrollment = enrollment
+        self.overrides = overrides.sorted { $0.componentID < $1.componentID }
+        platform = snapshot.effectivePlatform
+        capabilities = snapshot.effectiveCapabilities.sorted { $0.rawValue < $1.rawValue }
+    }
+
+    init(
+        machineID: String,
+        displayName: String,
+        role: DeviceRole,
+        enrollment: DeviceEnrollment,
+        overrides: [DeviceComponentOverride],
+        platform: DevicePlatform?,
+        capabilities: [DeviceCapability]?
+    ) {
+        self.machineID = machineID
+        self.displayName = displayName
+        self.role = role
+        self.enrollment = enrollment
+        self.overrides = overrides.sorted { $0.componentID < $1.componentID }
+        self.platform = platform
+        self.capabilities = capabilities?.sorted { $0.rawValue < $1.rawValue }
+    }
+
+    func scopeSelection(for componentID: String) -> DeviceScopeSelection {
+        overrides.first { $0.componentID == componentID }?.selection ?? .inherit
+    }
+}
+
+struct FleetDeviceItem: Identifiable, Hashable, Sendable {
+    let machineID: String
+    let snapshot: MachineSnapshot?
+    let policy: FleetDevicePolicy?
+    let localConnection: RemoteDeviceConnection?
+    let status: DeviceEnrollmentStatus
+
+    var id: String { machineID }
+    var name: String {
+        snapshot?.name ?? policy?.displayName ?? localConnection?.displayName ?? "Unknown device"
+    }
+    var platform: DevicePlatform {
+        snapshot?.effectivePlatform ?? policy?.platform ?? (localConnection == nil ? .unknown : .linux)
+    }
+    var capabilities: Set<DeviceCapability> {
+        snapshot?.effectiveCapabilities ?? Set(policy?.capabilities ?? [])
+    }
+    var role: DeviceRole {
+        policy?.role ?? localConnection?.role ?? DeviceRole.suggested(for: platform)
+    }
+    var hasFreshEvidence: Bool { snapshot != nil }
+    var isControllerManaged: Bool { localConnection != nil }
 }
 
 struct FleetScopeItem: Identifiable, Hashable, Sendable {
     let observation: ComponentObservation?
     let target: ManifestTarget?
+    let scopeSelection: DeviceScopeSelection
+    let isDeviceScope: Bool
+    let effectiveManaged: Bool
+    let applicability: ComponentApplicability
+    let canRequire: Bool
+
+    init(
+        observation: ComponentObservation?,
+        target: ManifestTarget?,
+        scopeSelection: DeviceScopeSelection? = nil,
+        isDeviceScope: Bool = false,
+        effectiveManaged: Bool? = nil,
+        applicability: ComponentApplicability = .applicable,
+        canRequire: Bool? = nil
+    ) {
+        self.observation = observation
+        self.target = target
+        self.scopeSelection = scopeSelection
+            ?? ((target?.isManagedByDefault == true) ? .required : .excluded)
+        self.isDeviceScope = isDeviceScope
+        self.effectiveManaged = effectiveManaged ?? (target?.isManagedByDefault == true)
+        self.applicability = applicability
+        self.canRequire = canRequire
+            ?? (target != nil || observation.map(FleetManifest.isEligibleForBaseline) == true)
+    }
 
     var id: String { observation?.id ?? target?.id ?? "unknown" }
 
@@ -186,14 +557,22 @@ struct FleetScopeItem: Identifiable, Hashable, Sendable {
         observation?.kind ?? target?.kind ?? .configuration
     }
 
-    var isManaged: Bool { target != nil }
+    var isManaged: Bool { effectiveManaged }
 
     var canAdd: Bool {
-        observation.map(FleetManifest.isEligibleForBaseline) == true
+        canRequire
+    }
+
+    var scopeLabel: String {
+        if isDeviceScope && !applicability.isApplicable && scopeSelection != .excluded {
+            return "Not applicable"
+        }
+        if isDeviceScope { return scopeSelection.label }
+        return effectiveManaged ? "Managed" : "Available"
     }
 
     var observedSummary: String {
-        guard let observation else { return "Not reported by this Mac" }
+        guard let observation else { return "Not reported by this device" }
         switch observation.status {
         case .installed:
             if observation.kind == .theme {
@@ -210,7 +589,7 @@ struct FleetScopeItem: Identifiable, Hashable, Sendable {
             }
             return "Installed"
         case .missing:
-            return "Not installed on this Mac"
+            return "Not installed on this device"
         case .unknown:
             return "Current state is unknown"
         }
@@ -218,16 +597,27 @@ struct FleetScopeItem: Identifiable, Hashable, Sendable {
 }
 
 struct FleetManifest: Codable, Hashable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     let schemaVersion: Int
     let revision: String
     let updatedAt: Date
     let updatedByMachineID: String
     let targets: [ManifestTarget]
+    let devices: [FleetDevicePolicy]?
 
     var activeTargets: [ManifestTarget] {
+        targets.filter {
+            ComponentLifecycle.isActive($0.id) && $0.isManagedByDefault
+        }
+    }
+
+    var catalogTargets: [ManifestTarget] {
         targets.filter { ComponentLifecycle.isActive($0.id) }
+    }
+
+    var needsDevicePolicyMigration: Bool {
+        schemaVersion < Self.currentSchemaVersion || devices == nil
     }
 
     init(snapshot: MachineSnapshot, updatedAt: Date = Date()) {
@@ -237,8 +627,15 @@ struct FleetManifest: Codable, Hashable, Sendable {
         updatedByMachineID = snapshot.machineID
         targets = snapshot.components
             .filter(Self.isEligibleForBaseline)
-            .map { ManifestTarget(observation: $0) }
+            .map {
+                ManifestTarget(
+                    observation: $0,
+                    defaultManaged: $0.id != "codex-voice",
+                    platform: snapshot.effectivePlatform
+                )
+            }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        devices = [FleetDevicePolicy(snapshot: snapshot)]
     }
 
     private init(
@@ -246,13 +643,15 @@ struct FleetManifest: Codable, Hashable, Sendable {
         revision: String,
         updatedAt: Date,
         updatedByMachineID: String,
-        targets: [ManifestTarget]
+        targets: [ManifestTarget],
+        devices: [FleetDevicePolicy]?
     ) {
         self.schemaVersion = schemaVersion
         self.revision = revision
         self.updatedAt = updatedAt
         self.updatedByMachineID = updatedByMachineID
         self.targets = targets
+        self.devices = devices
     }
 
     static func isEligibleForBaseline(_ observation: ComponentObservation) -> Bool {
@@ -272,15 +671,17 @@ struct FleetManifest: Codable, Hashable, Sendable {
             throw FleetManifestError.retiredComponent(componentID)
         }
 
-        let isCurrentlyManaged = targets.contains { $0.id == componentID }
+        let isCurrentlyManaged = target(componentID)?.isManagedByDefault == true
         guard isCurrentlyManaged != managed else {
             throw managed
                 ? FleetManifestError.alreadyManaged(componentID)
                 : FleetManifestError.alreadyUnmanaged(componentID)
         }
 
-        var updatedTargets = targets.filter { $0.id != componentID }
-        if managed {
+        var updatedTargets = targets
+        if let index = updatedTargets.firstIndex(where: { $0.id == componentID }) {
+            updatedTargets[index] = updatedTargets[index].settingDefaultManaged(managed)
+        } else if managed {
             guard let observation, observation.id == componentID else {
                 throw FleetManifestError.missingObservation(componentID)
             }
@@ -290,13 +691,237 @@ struct FleetManifest: Codable, Hashable, Sendable {
             updatedTargets.append(ManifestTarget(observation: observation))
         }
 
+        return replacing(
+            targets: updatedTargets,
+            devices: devices,
+            updatedByMachineID: updatedByMachineID,
+            updatedAt: updatedAt
+        )
+    }
+
+    func enrollmentStatus(for machineID: String) -> DeviceEnrollmentStatus {
+        guard let devices else {
+            return machineID == updatedByMachineID ? .enrolled : .pending
+        }
+        guard let device = devices.first(where: { $0.machineID == machineID }) else {
+            return .pending
+        }
+        return device.enrollment == .enrolled ? .enrolled : .excluded
+    }
+
+    func devicePolicy(_ machineID: String) -> FleetDevicePolicy? {
+        devices?.first { $0.machineID == machineID }
+    }
+
+    func scopeSelection(componentID: String, machineID: String) -> DeviceScopeSelection {
+        devicePolicy(machineID)?.scopeSelection(for: componentID) ?? .inherit
+    }
+
+    func scopedTargets(for snapshot: MachineSnapshot) -> [ManifestTarget] {
+        guard enrollmentStatus(for: snapshot.machineID) == .enrolled else { return [] }
+        return catalogTargets.filter { target in
+            switch scopeSelection(componentID: target.id, machineID: snapshot.machineID) {
+            case .required: true
+            case .excluded: false
+            case .inherit: target.isManagedByDefault
+            }
+        }
+    }
+
+    func migratingLegacyDevices(
+        _ snapshots: [MachineSnapshot],
+        updatedByMachineID: String? = nil,
+        updatedAt: Date? = nil,
+        preserveRevision: Bool = true
+    ) -> FleetManifest {
+        let migratedDevices: [FleetDevicePolicy]?
+        if let devices {
+            migratedDevices = devices
+        } else {
+            migratedDevices = snapshots
+                .filter { $0.machineID == self.updatedByMachineID }
+                .prefix(1)
+                .map { FleetDevicePolicy(snapshot: $0) }
+                .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        }
         return FleetManifest(
-            schemaVersion: schemaVersion,
+            schemaVersion: Self.currentSchemaVersion,
+            revision: preserveRevision ? revision : UUID().uuidString.lowercased(),
+            updatedAt: updatedAt ?? self.updatedAt,
+            updatedByMachineID: updatedByMachineID ?? self.updatedByMachineID,
+            targets: targets.map { target in
+                let normalized = target.normalizedForCurrentSchema()
+                guard schemaVersion < Self.currentSchemaVersion,
+                      normalized.id == "codex-voice" else {
+                    return normalized
+                }
+                return normalized.settingDefaultManaged(false)
+            },
+            devices: migratedDevices
+        )
+    }
+
+    func settingDeviceEnrollment(
+        snapshot: MachineSnapshot,
+        enrolled: Bool,
+        role: DeviceRole,
+        knownSnapshots: [MachineSnapshot],
+        updatedByMachineID: String,
+        updatedAt: Date = Date()
+    ) throws -> FleetManifest {
+        let requiredMigration = needsDevicePolicyMigration
+        let migrated = migratingLegacyDevices(knownSnapshots)
+        var policies = migrated.devices ?? []
+        let existingIndex = policies.firstIndex { $0.machineID == snapshot.machineID }
+        let desiredEnrollment: DeviceEnrollment = enrolled ? .enrolled : .excluded
+        if let existingIndex {
+            let existing = policies[existingIndex]
+            guard requiredMigration
+                || existing.enrollment != desiredEnrollment
+                || existing.role != role else {
+                throw FleetManifestError.devicePolicyUnchanged(snapshot.name)
+            }
+            policies[existingIndex] = FleetDevicePolicy(
+                snapshot: snapshot,
+                role: role,
+                enrollment: desiredEnrollment,
+                overrides: existing.overrides
+            )
+        } else {
+            policies.append(FleetDevicePolicy(
+                snapshot: snapshot,
+                role: role,
+                enrollment: desiredEnrollment
+            ))
+        }
+        return migrated.replacing(
+            targets: migrated.targets,
+            devices: policies,
+            updatedByMachineID: updatedByMachineID,
+            updatedAt: updatedAt
+        )
+    }
+
+    func settingExistingDevicePolicy(
+        machineID: String,
+        enrolled: Bool,
+        role: DeviceRole,
+        updatedByMachineID: String,
+        updatedAt: Date = Date()
+    ) throws -> FleetManifest {
+        guard var policies = devices,
+              let index = policies.firstIndex(where: { $0.machineID == machineID }) else {
+            throw FleetManifestError.deviceNotEnrolled("This device")
+        }
+        let existing = policies[index]
+        let desiredEnrollment: DeviceEnrollment = enrolled ? .enrolled : .excluded
+        guard existing.enrollment != desiredEnrollment || existing.role != role else {
+            throw FleetManifestError.devicePolicyUnchanged(existing.displayName)
+        }
+        policies[index] = FleetDevicePolicy(
+            machineID: existing.machineID,
+            displayName: existing.displayName,
+            role: role,
+            enrollment: desiredEnrollment,
+            overrides: existing.overrides,
+            platform: existing.platform,
+            capabilities: existing.capabilities
+        )
+        return replacing(
+            targets: targets,
+            devices: policies,
+            updatedByMachineID: updatedByMachineID,
+            updatedAt: updatedAt
+        )
+    }
+
+    func settingDeviceScope(
+        componentID: String,
+        selection: DeviceScopeSelection,
+        snapshot: MachineSnapshot,
+        knownSnapshots: [MachineSnapshot],
+        updatedByMachineID: String,
+        updatedAt: Date = Date()
+    ) throws -> FleetManifest {
+        guard ComponentLifecycle.isActive(componentID) else {
+            throw FleetManifestError.retiredComponent(componentID)
+        }
+        let migrated = migratingLegacyDevices(knownSnapshots)
+        guard let policyIndex = migrated.devices?.firstIndex(where: {
+            $0.machineID == snapshot.machineID && $0.enrollment == .enrolled
+        }), var policies = migrated.devices else {
+            throw FleetManifestError.deviceNotEnrolled(snapshot.name)
+        }
+        let policy = policies[policyIndex]
+        guard policy.scopeSelection(for: componentID) != selection else {
+            throw FleetManifestError.deviceScopeUnchanged(componentID)
+        }
+
+        var updatedTargets = migrated.targets
+        var resolvedTarget = migrated.target(componentID)
+        if selection == .required && resolvedTarget == nil {
+            guard let observation = snapshot.component(componentID) else {
+                throw FleetManifestError.missingObservation(componentID)
+            }
+            guard Self.isEligibleForBaseline(observation) else {
+                throw FleetManifestError.ineligibleObservation(observation.name)
+            }
+            let added = ManifestTarget(
+                observation: observation,
+                defaultManaged: false,
+                platform: snapshot.effectivePlatform
+            )
+            updatedTargets.append(added)
+            resolvedTarget = added
+        }
+        if selection == .required, let resolvedTarget {
+            let applicability = resolvedTarget.applicability(to: snapshot)
+            guard applicability.isApplicable else {
+                throw FleetManifestError.incompatibleDevice(
+                    component: resolvedTarget.name,
+                    device: snapshot.name,
+                    reason: applicability.reason
+                )
+            }
+        }
+
+        var overrides = policy.overrides.filter { $0.componentID != componentID }
+        if selection != .inherit {
+            overrides.append(DeviceComponentOverride(
+                componentID: componentID,
+                selection: selection
+            ))
+        }
+        policies[policyIndex] = FleetDevicePolicy(
+            snapshot: snapshot,
+            role: policy.role,
+            enrollment: policy.enrollment,
+            overrides: overrides
+        )
+        return migrated.replacing(
+            targets: updatedTargets,
+            devices: policies,
+            updatedByMachineID: updatedByMachineID,
+            updatedAt: updatedAt
+        )
+    }
+
+    private func replacing(
+        targets: [ManifestTarget],
+        devices: [FleetDevicePolicy]?,
+        updatedByMachineID: String,
+        updatedAt: Date
+    ) -> FleetManifest {
+        FleetManifest(
+            schemaVersion: Self.currentSchemaVersion,
             revision: UUID().uuidString.lowercased(),
             updatedAt: updatedAt,
             updatedByMachineID: updatedByMachineID,
-            targets: updatedTargets.sorted {
+            targets: targets.sorted {
                 $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            },
+            devices: devices?.sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
             }
         )
     }
@@ -313,19 +938,31 @@ enum FleetManifestError: LocalizedError {
     case retiredComponent(String)
     case alreadyManaged(String)
     case alreadyUnmanaged(String)
+    case deviceNotEnrolled(String)
+    case devicePolicyUnchanged(String)
+    case deviceScopeUnchanged(String)
+    case incompatibleDevice(component: String, device: String, reason: String)
 
     var errorDescription: String? {
         switch self {
         case .missingObservation(let componentID):
-            "This Mac has not reported enough evidence to add \(componentID) to fleet scope."
+            "This device has not reported enough evidence to add \(componentID) to fleet scope."
         case .ineligibleObservation(let name):
-            "\(name) must be installed or configured on this Mac before it can define fleet scope."
+            "\(name) must be installed or configured on this device before it can define fleet scope."
         case .retiredComponent(let componentID):
             "\(componentID) is retired and cannot be added to the active fleet baseline."
         case .alreadyManaged(let componentID):
             "\(componentID) is already managed by the fleet baseline."
         case .alreadyUnmanaged(let componentID):
             "\(componentID) is already outside fleet scope."
+        case .deviceNotEnrolled(let name):
+            "Add \(name) to the fleet before assigning managed items."
+        case .devicePolicyUnchanged(let name):
+            "\(name) already has that fleet membership and device type."
+        case .deviceScopeUnchanged(let componentID):
+            "\(componentID) already has that scope setting on this device."
+        case .incompatibleDevice(let component, let device, let reason):
+            "\(component) cannot be required on \(device). \(reason)"
         }
     }
 }
@@ -349,6 +986,7 @@ enum DriftState: String, Codable, Sendable {
     case unknown
     case localChanges
     case notManaged
+    case notApplicable
 
     var label: String {
         switch self {
@@ -358,6 +996,7 @@ enum DriftState: String, Codable, Sendable {
         case .unknown: "Unknown"
         case .localChanges: "Local work"
         case .notManaged: "Not in baseline"
+        case .notApplicable: "Not applicable"
         }
     }
 }
@@ -420,7 +1059,7 @@ struct MachineAssessment: Identifiable, Hashable, Sendable {
     }
 
     var attentionCount: Int {
-        managedDrifts.filter { $0.state != .aligned }.count
+        managedDrifts.filter { $0.state != .aligned && $0.state != .notApplicable }.count
             + (isStale ? 1 : 0)
     }
 }

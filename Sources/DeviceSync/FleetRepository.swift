@@ -98,14 +98,20 @@ struct FleetRepository: Sendable {
             manifest = nil
         }
 
-        var machines: [MachineSnapshot] = []
+        var machineReportsByID: [String: LoadedMachineReport] = [:]
+        var duplicateReportCountsByID: [String: Int] = [:]
         if fileManager.fileExists(atPath: machinesURL.path) {
             do {
                 let urls = try fileManager.contentsOfDirectory(
                     at: machinesURL,
                     includingPropertiesForKeys: [.isRegularFileKey],
                     options: [.skipsHiddenFiles]
-                ).filter { $0.pathExtension.lowercased() == "json" }
+                )
+                .filter { $0.pathExtension.lowercased() == "json" }
+                .sorted {
+                    $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent)
+                        == .orderedAscending
+                }
 
                 for url in urls {
                     do {
@@ -116,7 +122,16 @@ struct FleetRepository: Sendable {
                         guard UUID(uuidString: snapshot.machineID) != nil else {
                             throw FleetRepositoryError.invalidMachineID
                         }
-                        machines.append(snapshot)
+                        let report = LoadedMachineReport(snapshot: snapshot, sourceURL: url)
+                        if let existing = machineReportsByID[snapshot.machineID] {
+                            duplicateReportCountsByID[snapshot.machineID, default: 0] += 1
+                            machineReportsByID[snapshot.machineID] = preferredMachineReport(
+                                between: existing,
+                                and: report
+                            )
+                        } else {
+                            machineReportsByID[snapshot.machineID] = report
+                        }
                     } catch {
                         issues.append(FleetIssue(
                             id: url.lastPathComponent,
@@ -133,6 +148,14 @@ struct FleetRepository: Sendable {
             }
         }
 
+        for (machineID, ignoredCount) in duplicateReportCountsByID.sorted(by: { $0.key < $1.key }) {
+            issues.append(FleetIssue(
+                id: "duplicate-machine-report-\(machineID.lowercased())",
+                title: "Duplicate machine report ignored",
+                detail: "Multiple machine report files claimed the same privacy-preserving machine ID. FleetMesh kept the freshest capturedAt snapshot and ignored \(ignoredCount) duplicate report(s)."
+            ))
+        }
+        let machines = machineReportsByID.values.map(\.snapshot)
         return FleetReadResult(
             manifest: manifest,
             machines: machines.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
@@ -160,6 +183,36 @@ struct FleetRepository: Sendable {
     private func decode<T: Decodable>(_ type: T.Type, from url: URL) throws -> T {
         let data = try Data(contentsOf: url, options: [.mappedIfSafe])
         return try FleetJSON.decoder.decode(type, from: data)
+    }
+
+    private func preferredMachineReport(
+        between first: LoadedMachineReport,
+        and second: LoadedMachineReport
+    ) -> LoadedMachineReport {
+        if first.snapshot.capturedAt != second.snapshot.capturedAt {
+            return first.snapshot.capturedAt > second.snapshot.capturedAt ? first : second
+        }
+
+        let firstIsCanonical = first.isCanonicalMachineReport
+        let secondIsCanonical = second.isCanonicalMachineReport
+        if firstIsCanonical != secondIsCanonical {
+            return firstIsCanonical ? first : second
+        }
+
+        let ordering = first.sourceURL.lastPathComponent.localizedStandardCompare(
+            second.sourceURL.lastPathComponent
+        )
+        return ordering == .orderedDescending ? second : first
+    }
+}
+
+private struct LoadedMachineReport: Sendable {
+    let snapshot: MachineSnapshot
+    let sourceURL: URL
+
+    var isCanonicalMachineReport: Bool {
+        sourceURL.deletingPathExtension().lastPathComponent.lowercased()
+            == snapshot.machineID.lowercased()
     }
 }
 

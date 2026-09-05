@@ -15,6 +15,8 @@ struct RootView: View {
                     FleetView(store: store) {
                         navigation.open(.doctor)
                     }
+                case .devices:
+                    DevicesView(store: store)
                 case .doctor:
                     DoctorView(store: store)
                 case .bootstrap:
@@ -47,22 +49,26 @@ struct RootView: View {
                 }
 
                 Section("MACHINES") {
-                    ForEach(store.filteredAssessments) { assessment in
+                    ForEach(store.filteredDevices) { device in
                         Button {
-                            navigation.open(.fleet)
-                            store.selectedMachineID = assessment.snapshot.machineID
+                            navigation.open(.devices)
+                            store.selectedMachineID = device.machineID
                         } label: {
                             MachineSidebarRow(
-                                assessment: assessment,
-                                isCurrent: assessment.snapshot.machineID == store.localSnapshot?.machineID
+                                device: device,
+                                assessment: store.assessments.first {
+                                    $0.snapshot.machineID == device.machineID
+                                },
+                                isCurrent: device.machineID == store.localSnapshot?.machineID
                             )
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("devicesync.device.row.\(device.machineID)")
                     }
                 }
             }
             .listStyle(.sidebar)
-            .searchable(text: $store.searchText, prompt: "Machines or apps")
+            .searchable(text: $store.searchText, prompt: "Devices, roles, or apps")
 
             fleetFooter
         }
@@ -74,7 +80,7 @@ struct RootView: View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(DSTheme.auroraGradient)
+                    .fill(DSTheme.auroraFieldGradient)
                 FleetMeshMark()
                     .padding(6)
             }
@@ -83,7 +89,7 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(FleetMeshIdentity.productName)
                     .font(.system(size: 17, weight: .bold))
-                Text("Mac fleet control plane")
+                Text("Device fleet control plane")
                     .font(.caption)
                     .foregroundStyle(DSTheme.inkMuted)
             }
@@ -100,7 +106,7 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(store.fleetVerdict.label)
                     .font(.caption.weight(.semibold))
-                Text("\(store.assessments.count) machine\(store.assessments.count == 1 ? "" : "s") · \(store.fleetAttentionCount) item\(store.fleetAttentionCount == 1 ? "" : "s")")
+                Text("\(store.enrolledDevices.count) device\(store.enrolledDevices.count == 1 ? "" : "s") · \(store.fleetAttentionCount) item\(store.fleetAttentionCount == 1 ? "" : "s")")
                     .font(.caption2)
                     .foregroundStyle(DSTheme.inkMuted)
             }
@@ -112,16 +118,17 @@ struct RootView: View {
 }
 
 private struct MachineSidebarRow: View {
-    let assessment: MachineAssessment
+    let device: FleetDeviceItem
+    let assessment: MachineAssessment?
     let isCurrent: Bool
 
     var body: some View {
         HStack(spacing: 9) {
-            Image(systemName: "laptopcomputer")
-                .foregroundStyle(DSTheme.color(for: assessment.verdict))
+            Image(systemName: device.platform == .linux ? "server.rack" : "laptopcomputer")
+                .foregroundStyle(statusColor)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
-                    Text(assessment.snapshot.name)
+                    Text(device.name)
                         .lineLimit(1)
                     if isCurrent {
                         Text("THIS MAC")
@@ -129,12 +136,12 @@ private struct MachineSidebarRow: View {
                             .foregroundStyle(DSTheme.blue)
                     }
                 }
-                Text(assessment.isStale ? "Snapshot stale" : assessment.verdict.label)
+                Text(statusDetail)
                     .font(.caption2)
                     .foregroundStyle(DSTheme.inkMuted)
             }
             Spacer()
-            if assessment.attentionCount > 0 {
+            if let assessment, assessment.attentionCount > 0 {
                 Text("\(assessment.attentionCount)")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.white)
@@ -145,6 +152,652 @@ private struct MachineSidebarRow: View {
             }
         }
         .contentShape(Rectangle())
+    }
+
+    private var statusDetail: String {
+        switch device.status {
+        case .pending: return "Pending review"
+        case .excluded: return "Removed from fleet"
+        case .enrolled:
+            if !device.hasFreshEvidence { return "Evidence missing" }
+            guard let assessment else { return "Evidence incomplete" }
+            return assessment.isStale ? "Snapshot stale" : assessment.verdict.label
+        }
+    }
+
+    private var statusColor: Color {
+        switch device.status {
+        case .pending: return DSTheme.blue
+        case .excluded: return DSTheme.inkMuted
+        case .enrolled:
+            guard device.hasFreshEvidence, let assessment else { return DSTheme.orange }
+            return DSTheme.color(for: assessment.verdict)
+        }
+    }
+}
+
+struct DevicesView: View {
+    @Bindable var store: FleetStore
+    @State private var showAddDevice = false
+    @State private var pendingMembership: PendingDeviceMembership?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                header
+
+                if let error = store.lastError {
+                    IssueBanner(title: "Device change failed", detail: error, color: DSTheme.red)
+                }
+                if let message = store.lastActionMessage {
+                    ActionBanner(message: message)
+                }
+                if store.manifest == nil {
+                    IssueBanner(
+                        title: "Connect fleet authority first",
+                        detail: "A valid fleet-manifest.json is required before FleetMesh can add, enroll, or check in another device.",
+                        color: DSTheme.orange
+                    )
+                }
+
+                inventoryStrip
+
+                if let device = store.selectedDevice {
+                    deviceDetail(device)
+                } else {
+                    ContentUnavailableView(
+                        "No devices have checked in",
+                        systemImage: "server.rack",
+                        description: Text("Add a Linux device over SSH, or install FleetMesh on another Mac and point it at this fleet folder.")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 360)
+                }
+            }
+            .padding(28)
+        }
+        .accessibilityIdentifier("devicesync.devices")
+        .sheet(isPresented: $showAddDevice) {
+            AddDeviceSheet(store: store, isPresented: $showAddDevice)
+        }
+        .confirmationDialog(
+            membershipTitle,
+            isPresented: Binding(
+                get: { pendingMembership != nil },
+                set: { if !$0 { pendingMembership = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let change = pendingMembership {
+                Button(change.enrolled ? "Add to fleet" : "Remove from fleet", role: change.enrolled ? nil : .destructive) {
+                    pendingMembership = nil
+                    Task {
+                        await store.setDeviceEnrollment(
+                            machineID: change.device.machineID,
+                            enrolled: change.enrolled,
+                            role: change.device.role
+                        )
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingMembership = nil }
+        } message: {
+            if let change = pendingMembership {
+                Text(change.enrolled
+                    ? "FleetMesh will apply compatible fleet defaults to this device. This changes policy only; it does not install or repair anything."
+                    : "The device will stop contributing to fleet health, Bootstrap, and Doctor. Its evidence and local connection will be preserved so it can be added again.")
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("FLEET MEMBERSHIP")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .tracking(1.5)
+                    .foregroundStyle(DSTheme.cyan)
+                Text("Devices & scope")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                Text("Enroll each device deliberately, classify what it can run, and override fleet defaults only where needed.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(DSTheme.inkSoft)
+            }
+            Spacer()
+            Button {
+                showAddDevice = true
+            } label: {
+                Label("Add device", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(store.isBusy || store.manifest == nil)
+            .accessibilityIdentifier("devicesync.device.add")
+        }
+    }
+
+    private var inventoryStrip: some View {
+        HStack(spacing: 12) {
+            DeviceCountCard(
+                title: "In fleet",
+                value: store.devices.filter { $0.status == .enrolled }.count,
+                color: DSTheme.green,
+                symbol: "checkmark.circle.fill"
+            )
+            DeviceCountCard(
+                title: "Pending",
+                value: store.devices.filter { $0.status == .pending }.count,
+                color: DSTheme.blue,
+                symbol: "person.badge.clock.fill"
+            )
+            DeviceCountCard(
+                title: "Missing evidence",
+                value: store.missingEnrolledDevices.count,
+                color: DSTheme.orange,
+                symbol: "exclamationmark.arrow.triangle.2.circlepath"
+            )
+            DeviceCountCard(
+                title: "Removed",
+                value: store.devices.filter { $0.status == .excluded }.count,
+                color: DSTheme.inkMuted,
+                symbol: "minus.circle.fill"
+            )
+        }
+    }
+
+    private func deviceDetail(_ device: FleetDeviceItem) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            DeviceHero(device: device, store: store)
+
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 16) {
+                    membershipCard(device)
+                    capabilitiesCard(device)
+                }
+                .frame(width: 310, alignment: .topLeading)
+
+                scopeCard(device)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+    }
+
+    private func membershipCard(_ device: FleetDeviceItem) -> some View {
+        VStack(alignment: .leading, spacing: 13) {
+            SectionTitle(
+                title: "Membership & role",
+                subtitle: "Platform is observed evidence; role is your fleet policy"
+            )
+
+            HStack {
+                Text("Status")
+                    .font(.subheadline)
+                Spacer()
+                DeviceStatusPill(status: device.status)
+            }
+
+            HStack {
+                Text("Device role")
+                    .font(.subheadline)
+                Spacer()
+                Picker("Device role", selection: Binding(
+                    get: { device.role },
+                    set: { role in
+                        Task { await store.setDeviceRole(machineID: device.machineID, role: role) }
+                    }
+                )) {
+                    ForEach(DeviceRole.allCases, id: \.self) { role in
+                        Text(role.label).tag(role)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 150)
+                .disabled(
+                    store.isBusy
+                        || store.manifest == nil
+                        || (device.status == .pending && device.localConnection == nil)
+                )
+                .accessibilityIdentifier("devicesync.device.role")
+            }
+
+            if device.status == .pending && device.localConnection == nil {
+                Text("Enroll this independently reporting device before changing its fleet role.")
+                    .font(.caption2)
+                    .foregroundStyle(DSTheme.inkMuted)
+            }
+
+            if let connection = device.localConnection {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("PRIVATE SSH ENDPOINT")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(DSTheme.inkMuted)
+                    Text(connection.host)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                    Text("Stored only in local Application Support; never published to fleet JSON.")
+                        .font(.caption2)
+                        .foregroundStyle(DSTheme.inkMuted)
+                }
+                .padding(10)
+                .background(DSTheme.canvas)
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+
+                Button {
+                    Task { await store.checkInRemoteDevice(machineID: device.machineID) }
+                } label: {
+                    Label(
+                        store.isCheckingIn(device.machineID) ? "Checking in…" : "Check in over SSH",
+                        systemImage: "arrow.triangle.2.circlepath"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.isBusy)
+                .accessibilityIdentifier("devicesync.device.checkIn")
+            } else if device.machineID == store.localSnapshot?.machineID {
+                Button {
+                    Task { await store.refresh() }
+                } label: {
+                    Label("Scan this Mac", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.isBusy)
+            }
+
+            membershipButton(device)
+        }
+        .deviceCard()
+    }
+
+    @ViewBuilder
+    private func membershipButton(_ device: FleetDeviceItem) -> some View {
+        switch device.status {
+        case .pending:
+            Button {
+                pendingMembership = PendingDeviceMembership(device: device, enrolled: true)
+            } label: {
+                Label("Add to fleet", systemImage: "plus.circle.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!device.hasFreshEvidence || store.isBusy || store.manifest == nil)
+            .accessibilityIdentifier("devicesync.device.enroll")
+        case .enrolled:
+            Button("Remove from fleet…", role: .destructive) {
+                pendingMembership = PendingDeviceMembership(device: device, enrolled: false)
+            }
+            .frame(maxWidth: .infinity)
+            .disabled(store.isBusy || store.manifest == nil)
+            .accessibilityIdentifier("devicesync.device.remove")
+        case .excluded:
+            Button {
+                pendingMembership = PendingDeviceMembership(device: device, enrolled: true)
+            } label: {
+                Label("Add back to fleet", systemImage: "arrow.uturn.backward.circle.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!device.hasFreshEvidence || store.isBusy || store.manifest == nil)
+            .accessibilityIdentifier("devicesync.device.reenroll")
+        }
+    }
+
+    private func capabilitiesCard(_ device: FleetDeviceItem) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionTitle(
+                title: "Capabilities",
+                subtitle: "Reported by this device, never inferred from its role"
+            )
+            if device.capabilities.isEmpty {
+                Label("No current capability evidence", systemImage: "questionmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(DSTheme.orange)
+            } else {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 86), spacing: 7)],
+                    alignment: .leading,
+                    spacing: 7
+                ) {
+                    ForEach(device.capabilities.sorted { $0.rawValue < $1.rawValue }, id: \.self) { capability in
+                        CapabilityChip(capability: capability)
+                    }
+                }
+            }
+        }
+        .deviceCard()
+    }
+
+    private func scopeCard(_ device: FleetDeviceItem) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                SectionTitle(
+                    title: "Scope on this device",
+                    subtitle: "Inherit fleet defaults, require an exception, or exclude an item"
+                )
+                Spacer()
+                Text("\(store.deviceScopeItems(for: device.machineID).filter(\.isManaged).count) effective")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(DSTheme.blue)
+            }
+
+            if device.status != .enrolled {
+                IssueBanner(
+                    title: device.status == .pending ? "Review before enrollment" : "Outside fleet health",
+                    detail: device.status == .pending
+                        ? "Add this device to the fleet before assigning item-level scope. Its check-in does not enroll it automatically."
+                        : "Add this device back to the fleet before changing its item-level scope.",
+                    color: device.status == .pending ? DSTheme.blue : DSTheme.inkMuted
+                )
+            } else if !device.hasFreshEvidence {
+                IssueBanner(
+                    title: "Fresh evidence required",
+                    detail: "FleetMesh preserves this enrolled device, but will not change its scope while its report is missing.",
+                    color: DSTheme.orange
+                )
+            }
+
+            let items = store.deviceScopeItems(for: device.machineID)
+            if items.isEmpty {
+                ContentUnavailableView(
+                    "No fleet catalog",
+                    systemImage: "checklist.unchecked",
+                    description: Text("Create or connect a fleet baseline before assigning device scope.")
+                )
+                .frame(maxWidth: .infinity, minHeight: 170)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        DeviceScopeRow(
+                            item: item,
+                            enabled: device.status == .enrolled
+                                && device.hasFreshEvidence
+                                && !store.isBusy
+                        ) { selection in
+                            Task {
+                                await store.setDeviceScope(
+                                    machineID: device.machineID,
+                                    componentID: item.id,
+                                    selection: selection
+                                )
+                            }
+                        }
+                        if index < items.count - 1 {
+                            Divider().padding(.leading, 44)
+                        }
+                    }
+                }
+                .background(DSTheme.canvas)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(DSTheme.line, lineWidth: 1)
+                }
+            }
+        }
+        .deviceCard()
+    }
+
+    private var membershipTitle: String {
+        guard let change = pendingMembership else { return "Change fleet membership?" }
+        return change.enrolled
+            ? "Add \(change.device.name) to the fleet?"
+            : "Remove \(change.device.name) from the fleet?"
+    }
+}
+
+private struct PendingDeviceMembership {
+    let device: FleetDeviceItem
+    let enrolled: Bool
+}
+
+private struct DeviceCountCard: View {
+    let title: String
+    let value: Int
+    let color: Color
+    let symbol: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(value)")
+                    .font(.system(size: 19, weight: .bold, design: .rounded))
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(DSTheme.inkMuted)
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .deviceCard()
+    }
+}
+
+private struct DeviceHero: View {
+    let device: FleetDeviceItem
+    @Bindable var store: FleetStore
+
+    var body: some View {
+        HStack(spacing: 18) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(DSTheme.auroraGradient.opacity(0.18))
+                Image(systemName: device.platform == .linux ? "server.rack" : "laptopcomputer")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundStyle(DSTheme.cyan)
+            }
+            .frame(width: 76, height: 68)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(device.name)
+                        .font(.system(size: 23, weight: .bold, design: .rounded))
+                    if device.machineID == store.localSnapshot?.machineID {
+                        Text("THIS MAC")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(DSTheme.blue)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(DSTheme.blue.opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                }
+                Text("\(device.platform.label) · \(device.role.label)")
+                    .font(.subheadline)
+                    .foregroundStyle(DSTheme.inkSoft)
+                if let snapshot = device.snapshot {
+                    Text("\(snapshot.architecture) · OS \(snapshot.osVersion) · captured \(relativeDate(snapshot.capturedAt))")
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkMuted)
+                } else {
+                    Text("No readable check-in is currently available")
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.orange)
+                }
+            }
+            Spacer()
+            DeviceStatusPill(status: device.status)
+        }
+        .deviceCard()
+    }
+}
+
+private struct DeviceStatusPill: View {
+    let status: DeviceEnrollmentStatus
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(status.label).font(.caption.weight(.semibold))
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(color.opacity(0.1))
+        .clipShape(Capsule())
+    }
+
+    private var color: Color {
+        switch status {
+        case .pending: DSTheme.blue
+        case .enrolled: DSTheme.green
+        case .excluded: DSTheme.inkMuted
+        }
+    }
+}
+
+private struct CapabilityChip: View {
+    let capability: DeviceCapability
+
+    var body: some View {
+        Label(capability.label, systemImage: "checkmark")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(DSTheme.inkSoft)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(DSTheme.cyan.opacity(0.09))
+            .clipShape(Capsule())
+    }
+}
+
+private struct DeviceScopeRow: View {
+    let item: FleetScopeItem
+    let enabled: Bool
+    let update: (DeviceScopeSelection) -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: item.applicability.isApplicable ? "checklist" : "nosign")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(item.applicability.isApplicable ? DSTheme.green : DSTheme.inkMuted)
+                .frame(width: 32, height: 32)
+                .background((item.applicability.isApplicable ? DSTheme.green : DSTheme.inkMuted).opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 7) {
+                    Text(item.name).font(.subheadline.weight(.semibold))
+                    Text(item.kind.label.uppercased())
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(DSTheme.inkMuted)
+                }
+                Text(item.applicability.isApplicable ? item.observedSummary : item.applicability.reason)
+                    .font(.caption)
+                    .foregroundStyle(item.applicability.isApplicable ? DSTheme.inkMuted : DSTheme.orange)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Text(item.scopeLabel)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(item.isManaged ? DSTheme.green : DSTheme.inkMuted)
+            Menu {
+                Button {
+                    update(.inherit)
+                } label: {
+                    scopeLabel(.inherit, selected: item.scopeSelection == .inherit)
+                }
+                Button {
+                    update(.required)
+                } label: {
+                    scopeLabel(.required, selected: item.scopeSelection == .required)
+                }
+                .disabled(!item.canRequire)
+                Button {
+                    update(.excluded)
+                } label: {
+                    scopeLabel(.excluded, selected: item.scopeSelection == .excluded)
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 16, weight: .medium))
+            }
+            .menuStyle(.borderlessButton)
+            .disabled(!enabled)
+            .accessibilityIdentifier("devicesync.device.scope.\(item.id)")
+        }
+        .padding(12)
+    }
+
+    private func scopeLabel(_ selection: DeviceScopeSelection, selected: Bool) -> some View {
+        Label(selection.label, systemImage: selected ? "checkmark" : "circle")
+    }
+}
+
+private struct AddDeviceSheet: View {
+    @Bindable var store: FleetStore
+    @Binding var isPresented: Bool
+    @State private var host = ""
+    @State private var displayName = ""
+    @State private var role: DeviceRole = .cloudDesktop
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 13).fill(DSTheme.auroraGradient)
+                    Image(systemName: "server.rack")
+                        .font(.system(size: 23, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 52, height: 52)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Add a Linux device")
+                        .font(.title2.bold())
+                    Text("Use a host already reachable through your SSH config or agent.")
+                        .font(.subheadline)
+                        .foregroundStyle(DSTheme.inkSoft)
+                }
+            }
+
+            Form {
+                TextField("SSH host or config alias", text: $host, prompt: Text("dev-dsk-…amazon.com"))
+                    .textContentType(.URL)
+                TextField("Fleet display name", text: $displayName, prompt: Text("Dev cloud desktop"))
+                Picker("Device role", selection: $role) {
+                    ForEach(DeviceRole.allCases, id: \.self) { role in
+                        Text(role.label).tag(role)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Runs a fixed, bounded, read-only SSH probe", systemImage: "checkmark.shield.fill")
+                Label("Publishes only a random ID and redacted evidence", systemImage: "eye.slash.fill")
+                Label("Does not enroll, install, update, or repair the device", systemImage: "hand.raised.fill")
+            }
+            .font(.caption)
+            .foregroundStyle(DSTheme.inkSoft)
+
+            HStack {
+                Button("Cancel", role: .cancel) { isPresented = false }
+                Spacer()
+                Button("Check in device") {
+                    let submittedHost = host
+                    let submittedName = displayName
+                    let submittedRole = role
+                    isPresented = false
+                    Task {
+                        await store.addRemoteDevice(
+                            host: submittedHost,
+                            displayName: submittedName,
+                            role: submittedRole
+                        )
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || store.isBusy
+                )
+            }
+        }
+        .padding(24)
+        .frame(width: 510)
+        .environment(\.colorScheme, .light)
+        .foregroundStyle(DSTheme.ink)
     }
 }
 
@@ -207,9 +860,9 @@ struct FleetView: View {
         case .aligned:
             return "Every fresh machine report matches the selected software and theme baseline."
         case .attention:
-            return "One or more Macs differ from the baseline or have stale evidence."
+            return "One or more devices differ from the baseline or have stale evidence."
         case .critical:
-            return "A required app or configuration is missing on at least one Mac."
+            return "A required app or configuration is missing on at least one device."
         case .unknown:
             return "Some fleet evidence could not be read or verified."
         }
@@ -218,9 +871,9 @@ struct FleetView: View {
     private var metrics: some View {
         HStack(spacing: 12) {
             MetricCard(
-                title: "Machines",
-                value: "\(store.assessments.count)",
-                detail: "publishing snapshots",
+                title: "Devices",
+                value: "\(store.enrolledDevices.count)",
+                detail: "in fleet",
                 color: DSTheme.blue,
                 symbol: "laptopcomputer.and.iphone"
             )
@@ -240,7 +893,7 @@ struct FleetView: View {
             )
             MetricCard(
                 title: "Baseline",
-                value: store.manifest == nil ? "—" : "v1",
+                value: store.manifest.map { "v\($0.schemaVersion)" } ?? "—",
                 detail: store.manifest.map { relativeDate($0.updatedAt) } ?? "not verified",
                 color: DSTheme.purple,
                 symbol: "scope"
@@ -262,7 +915,7 @@ struct FleetView: View {
                         ContentUnavailableView(
                             "No managed items",
                             systemImage: "checklist.unchecked",
-                            description: Text("Add apps, tools, or themes from Settings → Managed items.")
+                            description: Text("Add apps, tools, or themes from Settings → Fleet defaults.")
                         )
                         .frame(maxWidth: .infinity, minHeight: 180)
                         .deviceCard()
@@ -1129,7 +1782,7 @@ struct SettingsView: View {
                     }
                     VStack(alignment: .leading, spacing: 7) {
                         Label("fleet-manifest.json — in-scope products and desired state", systemImage: "scope")
-                        Label("machines/<machine-id>.json — observed evidence from each Mac", systemImage: "laptopcomputer.and.arrow.down")
+                        Label("machines/<machine-id>.json — observed evidence from each device", systemImage: "laptopcomputer.and.arrow.down")
                         Label("local-state.json — this Mac's anonymous ID and fleet pointer", systemImage: "internaldrive")
                     }
                     .font(.caption)
@@ -1138,10 +1791,10 @@ struct SettingsView: View {
                 .deviceCard()
 
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionTitle(title: "In-scope manifest", subtitle: "Required products, versions, and theme fingerprints for every Mac")
+                    SectionTitle(title: "In-scope manifest", subtitle: "Defaults, versions, and fingerprints for compatible fleet devices")
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(store.manifest == nil ? "No baseline" : "Fleet protocol v\(store.manifest?.schemaVersion ?? 1)")
+                            Text(store.manifest.map { "Fleet protocol v\($0.schemaVersion)" } ?? "No baseline")
                                 .font(.headline)
                             Text(store.manifest.map { "Updated \(relativeDate($0.updatedAt)) · \($0.activeTargets.count) targets" } ?? "Create one from a verified Mac.")
                                 .font(.caption)
@@ -1153,7 +1806,7 @@ struct SettingsView: View {
                         }
                         .disabled(store.localSnapshot == nil || store.isBusy)
                     }
-                    Text("New Macs must connect OneDrive before FleetMesh's first scan, then read this manifest and publish their own evidence. Do not use a new Mac as baseline unless you intend to replace fleet scope.")
+                    Text("New Macs must connect the shared fleet folder before their first scan. Linux devices check in over a local-only SSH connection. Do not replace the baseline unless you intend to change fleet-wide defaults.")
                         .font(.caption)
                         .foregroundStyle(DSTheme.inkSoft)
                 }
@@ -1162,8 +1815,8 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(alignment: .top) {
                         SectionTitle(
-                            title: "Managed items",
-                            subtitle: "Choose what FleetMesh compares, bootstraps, and offers to Doctor"
+                            title: "Fleet defaults",
+                            subtitle: "Choose what compatible devices inherit for comparison and Bootstrap"
                         )
                         Spacer()
                         if store.isUpdatingScope {

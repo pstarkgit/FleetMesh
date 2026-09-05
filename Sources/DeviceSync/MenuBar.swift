@@ -60,6 +60,7 @@ final class DeviceSyncStatusItemController: NSObject {
             button.action = #selector(togglePopover(_:))
             button.sendAction(on: [.leftMouseUp])
             button.identifier = NSUserInterfaceItemIdentifier("devicesync.statusItem")
+            button.imageScaling = .scaleProportionallyDown
         }
 
         updateStatusItem()
@@ -103,19 +104,54 @@ final class DeviceSyncStatusItemController: NSObject {
     private static func statusItemImage(summary: MenuBarSummary, label: String) -> NSImage {
         let size = NSSize(width: 19, height: 19)
         let image = NSImage(size: size, flipped: false) { rect in
-            NSColor.labelColor.setStroke()
-            NSColor.labelColor.setFill()
-            let markRect = rect.insetBy(dx: 1.4, dy: 1.4)
+            let markRect = rect.insetBy(dx: 0.7, dy: 0.7)
             let links = NSBezierPath(FleetMeshMarkGeometry.links(in: markRect))
-            links.lineWidth = 1.35
             links.lineCapStyle = .round
             links.lineJoinStyle = .round
-            links.stroke()
-            NSBezierPath(FleetMeshMarkGeometry.nodes(in: markRect)).fill()
+            let nodes = NSBezierPath(FleetMeshMarkGeometry.nodes(in: markRect))
 
-            let badgeRect = NSRect(x: 12.0, y: 0.8, width: 6.2, height: 6.2)
+            // Keep the core crisp and appearance-adaptive, then add the same
+            // restrained Aurora bloom used by the installed app icon. The
+            // image stays non-template so AppKit preserves the colored glow.
+            if let context = NSGraphicsContext.current?.cgContext {
+                context.saveGState()
+                context.setShadow(
+                    offset: .zero,
+                    blur: 2.6,
+                    color: NSColor(
+                        calibratedRed: 0.13,
+                        green: 0.83,
+                        blue: 0.93,
+                        alpha: 0.95
+                    ).cgColor
+                )
+                links.lineWidth = 2.15
+                NSColor(
+                    calibratedRed: 0.38,
+                    green: 0.98,
+                    blue: 0.82,
+                    alpha: 0.72
+                ).setStroke()
+                links.stroke()
+                NSColor(
+                    calibratedRed: 0.38,
+                    green: 0.98,
+                    blue: 0.82,
+                    alpha: 0.68
+                ).setFill()
+                nodes.fill()
+                context.restoreGState()
+            }
+
+            links.lineWidth = 1.25
+            NSColor.labelColor.setStroke()
+            links.stroke()
+            NSColor.labelColor.setFill()
+            nodes.fill()
+
+            let badgeRect = NSRect(x: 12.3, y: 0.7, width: 5.8, height: 5.8)
             NSColor.controlBackgroundColor.setFill()
-            NSBezierPath(ovalIn: badgeRect.insetBy(dx: -1, dy: -1)).fill()
+            NSBezierPath(ovalIn: badgeRect.insetBy(dx: -0.9, dy: -0.9)).fill()
             Self.badgeColor(for: summary).setFill()
             NSBezierPath(ovalIn: badgeRect).fill()
             return true
@@ -199,7 +235,7 @@ struct MenuBarSummary: Equatable, Sendable {
         case .aligned:
             return "Fresh fleet evidence matches the selected baseline."
         case .attention:
-            return "One or more Macs have drift, stale evidence, or a decision."
+            return "One or more devices have drift, stale evidence, or a decision."
         case .critical:
             return "A required app or configuration is missing."
         case .unknown:
@@ -208,7 +244,7 @@ struct MenuBarSummary: Equatable, Sendable {
     }
 
     var machineLabel: String {
-        "\(machineCount) machine\(machineCount == 1 ? "" : "s")"
+        "\(machineCount) device\(machineCount == 1 ? "" : "s")"
     }
 
     var attentionLabel: String {
@@ -243,7 +279,7 @@ struct DeviceSyncMenuBarView: View {
         HStack(spacing: 11) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(DSTheme.auroraGradient)
+                    .fill(DSTheme.auroraFieldGradient)
                 FleetMeshMark()
                     .padding(6)
             }
@@ -253,7 +289,7 @@ struct DeviceSyncMenuBarView: View {
                 Text(FleetMeshIdentity.productName)
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(DSTheme.ink)
-                Text("Mac fleet control plane")
+                Text("Device fleet control plane")
                     .font(.caption)
                     .foregroundStyle(DSTheme.inkMuted)
             }
@@ -297,9 +333,9 @@ struct DeviceSyncMenuBarView: View {
 
             HStack(spacing: 10) {
                 MenuMetric(
-                    symbol: "laptopcomputer",
+                    symbol: "server.rack",
                     value: "\(summary.machineCount)",
-                    label: "Machines",
+                    label: "Devices",
                     color: DSTheme.blue
                 )
                 MenuMetric(
@@ -371,13 +407,13 @@ struct DeviceSyncMenuBarView: View {
             .buttonStyle(.bordered)
 
             Button {
-                openSection(.settings)
+                openSection(.devices)
             } label: {
-                Label("Manage fleet items", systemImage: "checklist")
+                Label("Manage devices", systemImage: AppSection.devices.symbol)
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .accessibilityIdentifier("devicesync.menu.manageItems")
+            .accessibilityIdentifier("devicesync.menu.manageDevices")
 
             Text("Close the window anytime—FleetMesh stays here. Repairs open in the full Doctor for review and proof.")
                 .font(.caption2)

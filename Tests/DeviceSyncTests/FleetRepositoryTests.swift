@@ -24,7 +24,13 @@ struct FleetRepositoryTests {
         let snapshot = repositoryFixtureSnapshot(components: [authBar, codexVoice])
         let original = FleetManifest(snapshot: snapshot)
 
-        let removed = try original.settingManaged(
+        let added = try original.settingManaged(
+            componentID: "codex-voice",
+            managed: true,
+            observation: codexVoice,
+            updatedByMachineID: snapshot.machineID
+        )
+        let removed = try added.settingManaged(
             componentID: "codex-voice",
             managed: false,
             observation: codexVoice,
@@ -37,8 +43,9 @@ struct FleetRepositoryTests {
             updatedByMachineID: snapshot.machineID
         )
 
+        #expect(original.target("codex-voice")?.isManagedByDefault == false)
         #expect(original.target("authbar") == removed.target("authbar"))
-        #expect(removed.target("codex-voice") == nil)
+        #expect(removed.target("codex-voice")?.isManagedByDefault == false)
         #expect(restored.target("codex-voice")?.expectedVersion == "0.1.0")
         #expect(restored.revision != removed.revision)
     }
@@ -103,6 +110,89 @@ struct FleetRepositoryTests {
         #expect(result.machines.first?.machineID == snapshot.machineID)
         #expect(result.issues.count == 1)
         #expect(result.issues.first?.title == "One machine report is unreadable")
+    }
+
+    @Test
+    func duplicateMachineReportsKeepFreshestSnapshotAndReportIgnoredEvidence() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = FleetRepository(rootURL: root)
+        try FileManager.default.createDirectory(
+            at: repository.machinesURL,
+            withIntermediateDirectories: true
+        )
+        let machineID = "b41f9f4f-0fce-4792-a3c6-c93a73fcb4cd"
+        let older = repositoryFixtureSnapshot(
+            machineID: machineID,
+            name: "Older report",
+            capturedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        let newer = repositoryFixtureSnapshot(
+            machineID: machineID,
+            name: "Newer report",
+            capturedAt: Date(timeIntervalSince1970: 2_000)
+        )
+        try writeMachineReport(
+            older,
+            to: repository.machinesURL.appendingPathComponent("(machineID).json")
+        )
+        try writeMachineReport(
+            newer,
+            to: repository.machinesURL.appendingPathComponent(
+                "dev-dsk-starkpat-1d-19238b71.us-east-1.amazon.com-secret-token.json"
+            )
+        )
+
+        let result = repository.load()
+
+        #expect(result.machines.map(\.machineID) == [machineID])
+        #expect(result.machines.first?.name == "Newer report")
+        let issue = try #require(result.issues.first {
+            $0.title == "Duplicate machine report ignored"
+        })
+        #expect(issue.detail.contains("freshest capturedAt snapshot"))
+        #expect(!issue.id.contains("dev-dsk-starkpat"))
+        #expect(!issue.id.contains("secret-token"))
+        #expect(!issue.detail.contains("dev-dsk-starkpat"))
+        #expect(!issue.detail.contains("secret-token"))
+    }
+
+    @Test
+    func duplicateMachineReportsWithEqualTimestampsResolveDeterministically() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = FleetRepository(rootURL: root)
+        try FileManager.default.createDirectory(
+            at: repository.machinesURL,
+            withIntermediateDirectories: true
+        )
+        let machineID = "b41f9f4f-0fce-4792-a3c6-c93a73fcb4cd"
+        let capturedAt = Date(timeIntervalSince1970: 3_000)
+        let canonical = repositoryFixtureSnapshot(
+            machineID: machineID,
+            name: "Canonical report",
+            capturedAt: capturedAt
+        )
+        let duplicate = repositoryFixtureSnapshot(
+            machineID: machineID,
+            name: "Duplicate report",
+            capturedAt: capturedAt
+        )
+        try writeMachineReport(
+            duplicate,
+            to: repository.machinesURL.appendingPathComponent("000-duplicate.json")
+        )
+        try writeMachineReport(
+            canonical,
+            to: repository.machinesURL.appendingPathComponent("\(machineID).json")
+        )
+
+        let firstLoad = repository.load()
+        let secondLoad = repository.load()
+
+        #expect(firstLoad.machines.map(\.name) == ["Canonical report"])
+        #expect(secondLoad.machines.map(\.name) == ["Canonical report"])
+        #expect(firstLoad.issues.first?.id == secondLoad.issues.first?.id)
     }
 
     @Test
@@ -252,7 +342,14 @@ struct FleetScopeOrchestrationTests {
             osBuild: "25G83",
             components: [authBar, codexVoice]
         )
-        try FleetRepository(rootURL: fleet).saveManifest(FleetManifest(snapshot: snapshot))
+        let seeded = FleetManifest(snapshot: snapshot)
+        let managed = try seeded.settingManaged(
+            componentID: "codex-voice",
+            managed: true,
+            observation: codexVoice,
+            updatedByMachineID: snapshot.machineID
+        )
+        try FleetRepository(rootURL: fleet).saveManifest(managed)
         let inventory = ScopeInventory(snapshot: snapshot)
         let runner = RecordingScopeDoctorRunner()
         let store = FleetStore(
@@ -266,7 +363,7 @@ struct FleetScopeOrchestrationTests {
         await store.setComponentManaged(componentID: "codex-voice", managed: false)
 
         let read = FleetRepository(rootURL: fleet).load()
-        #expect(read.manifest?.target("codex-voice") == nil)
+        #expect(read.manifest?.target("codex-voice")?.isManagedByDefault == false)
         #expect(read.manifest?.target("authbar") != nil)
         #expect(read.machines.first?.component("codex-voice") != nil)
         #expect(store.fleetScopeItems.first { $0.id == "codex-voice" }?.isManaged == false)
@@ -313,16 +410,20 @@ private actor RecordingScopeDoctorRunner: DoctorCommandRunning {
 }
 
 private func repositoryFixtureSnapshot(
+    machineID: String = "b41f9f4f-0fce-4792-a3c6-c93a73fcb4cd",
+    name: String = "Patrick's Mac",
+    capturedAt: Date = Date(),
     components: [ComponentObservation]? = nil
 ) -> MachineSnapshot {
     MachineSnapshot(
-        machineID: "b41f9f4f-0fce-4792-a3c6-c93a73fcb4cd",
-        name: "Patrick's Mac",
+        machineID: machineID,
+        name: name,
         hostName: "patricks-mac",
         modelIdentifier: "Mac17,6",
         architecture: "arm64",
         osVersion: "26.6.2",
         osBuild: "25G83",
+        capturedAt: capturedAt,
         components: components ?? [
             ComponentObservation(
                 id: "codex-themes",
@@ -335,6 +436,11 @@ private func repositoryFixtureSnapshot(
             ),
         ]
     )
+}
+
+private func writeMachineReport(_ snapshot: MachineSnapshot, to url: URL) throws {
+    let data = try FleetJSON.encoder.encode(snapshot)
+    try data.write(to: url, options: .atomic)
 }
 
 private func temporaryDirectory() -> URL {

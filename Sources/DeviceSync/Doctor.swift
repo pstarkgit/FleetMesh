@@ -128,15 +128,6 @@ enum DoctorCatalog {
                 homeRelativeWorkingDirectory: "code/ModelBridge"
             )
         ),
-        "codex-voice": DoctorActionDefinition(
-            title: "Deploy the clean Codex Voice checkout",
-            detail: "Build and install through Codex Voice's own installer, then verify the live app process.",
-            recipe: DoctorRecipe(
-                componentID: "codex-voice",
-                homeRelativeExecutable: "code/CodexVoice/install.sh",
-                homeRelativeWorkingDirectory: "code/CodexVoice"
-            )
-        ),
         "harness-sync": DoctorActionDefinition(
             title: "Run the harness-sync bootstrap",
             detail: "Let harness-sync own Claude and OMP links. Per-machine identity and token steps remain manual.",
@@ -190,7 +181,9 @@ struct DoctorPlanner: Sendable {
         manifest: FleetManifest?
     ) -> [DoctorFinding] {
         assessment.drifts.compactMap { drift in
-            guard drift.state != .aligned && drift.state != .notManaged else { return nil }
+            guard drift.state != .aligned
+                && drift.state != .notManaged
+                && drift.state != .notApplicable else { return nil }
             return finding(
                 for: drift,
                 observation: assessment.snapshot.component(drift.componentID),

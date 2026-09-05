@@ -150,7 +150,13 @@ struct DriftEngineTests {
         )
         let snapshot = fixtureSnapshot(components: [authBar, codexVoice])
         let original = FleetManifest(snapshot: snapshot)
-        let manifest = try original.settingManaged(
+        let managed = try original.settingManaged(
+            componentID: codexVoice.id,
+            managed: true,
+            observation: codexVoice,
+            updatedByMachineID: snapshot.machineID
+        )
+        let manifest = try managed.settingManaged(
             componentID: codexVoice.id,
             managed: false,
             observation: codexVoice,

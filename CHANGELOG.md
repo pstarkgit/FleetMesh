@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.7 — 2026-09-04
+
+- Added the cross-platform device model for macOS and Linux devices, with
+  workstation, server, and cloud-desktop roles plus explicit capability tracking
+  for GUI, Mac apps, menu bar, launchd, systemd, shell, and config files.
+- Upgraded the desired-state manifest to schema v2 with explicit device
+  enrollment, removal, role assignment, and per-device Inherit/Required/Excluded
+  item policy while preserving snapshot schema v1 through additive platform and
+  capability fields.
+- Added local-only Linux SSH check-in: endpoints stay in this controller Mac's
+  legacy Application Support state, shared JSON receives only redacted evidence,
+  and the probe uses a fixed bounded read-only script through the user's existing
+  SSH config and agent.
+- Kept Doctor local-only and evidence-gated: remote devices can check in, but
+  repairs remain explicit local actions backed by product-owned entrypoints and
+  postflight snapshots.
+- Made Codex Voice observable but outside the managed daily baseline so it does
+  not create normal posture, Bootstrap, or Doctor work.
+- Reaffirmed Kiro Crew as the active managed agent product and MeshClaw as
+  retired compatibility evidence that readers ignore.
+- Documented menu-bar/full-app reliability: closing the singleton window keeps
+  FleetMesh alive in the menu bar, and Dock/menu actions reopen the same live
+  app state.
+- Preserved all legacy compatibility identifiers, including
+  `dev.starkpat.devicesync`, `DeviceSync`, `device-sync`,
+  `deviceSyncVersion`, the `Device Sync` folders, LaunchAgent label, and
+  status-item autosave name.
+
 ## 0.1.6 — 2026-09-04
 
 - Added explicit Managed Items controls in Settings so individual apps, tools,

@@ -74,19 +74,51 @@ struct FleetMeshMark: View {
         Canvas { context, size in
             let scale = min(size.width, size.height) / 100
             let rect = CGRect(origin: .zero, size: size)
+            let links = FleetMeshMarkGeometry.links(in: rect)
+            let nodes = FleetMeshMarkGeometry.nodes(in: rect)
+            let aurora = GraphicsContext.Shading.linearGradient(
+                Gradient(colors: [
+                    Color(red: 0.49, green: 1.0, blue: 0.82),
+                    Color(red: 0.40, green: 0.91, blue: 0.98),
+                    Color(red: 0.77, green: 0.71, blue: 0.99),
+                ]),
+                startPoint: CGPoint(x: rect.minX, y: rect.minY),
+                endPoint: CGPoint(x: rect.maxX, y: rect.maxY)
+            )
+
+            context.drawLayer { glow in
+                glow.addFilter(.blur(radius: max(1, 4.5 * scale)))
+                glow.stroke(
+                    links,
+                    with: .color(DSTheme.auroraCyan.opacity(0.95)),
+                    style: StrokeStyle(
+                        lineWidth: 13 * scale,
+                        lineCap: .round,
+                        lineJoin: .round
+                    )
+                )
+                glow.fill(nodes, with: .color(DSTheme.auroraCyan.opacity(0.85)))
+            }
             context.stroke(
-                FleetMeshMarkGeometry.links(in: rect),
-                with: .color(.black.opacity(0.90)),
+                links,
+                with: .color(Color(red: 0.02, green: 0.08, blue: 0.12).opacity(0.82)),
                 style: StrokeStyle(
-                    lineWidth: 6.7 * scale,
+                    lineWidth: 10.2 * scale,
                     lineCap: .round,
                     lineJoin: .round
                 )
             )
-            context.fill(
-                FleetMeshMarkGeometry.nodes(in: rect),
-                with: .color(.black.opacity(0.90))
+            context.stroke(
+                links,
+                with: aurora,
+                style: StrokeStyle(
+                    lineWidth: 6.8 * scale,
+                    lineCap: .round,
+                    lineJoin: .round
+                )
             )
+            context.fill(nodes, with: aurora)
+            context.stroke(nodes, with: .color(.white.opacity(0.85)), lineWidth: 1.2 * scale)
         }
         .accessibilityHidden(true)
     }

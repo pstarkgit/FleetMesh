@@ -127,6 +127,11 @@ struct DoctorPlannerTests {
         #expect(DoctorPlanner().repairedLocalState(before: before, after: after))
         #expect(!DoctorPlanner().repairedLocalState(before: after, after: after))
     }
+
+    @Test
+    func codexVoiceHasNoDoctorRepairCatalogEntry() {
+        #expect(DoctorCatalog.definition(for: "codex-voice") == nil)
+    }
 }
 
 struct DoctorOrchestrationTests {
