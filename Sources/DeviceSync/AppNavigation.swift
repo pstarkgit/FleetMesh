@@ -2,6 +2,7 @@ import Observation
 
 enum AppSection: String, CaseIterable, Identifiable, Sendable {
     case fleet = "Fleet"
+    case devices = "Devices"
     case doctor = "Doctor"
     case bootstrap = "Bootstrap"
     case settings = "Settings"
@@ -11,6 +12,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
     var symbol: String {
         switch self {
         case .fleet: "macbook.and.iphone"
+        case .devices: "server.rack"
         case .doctor: "stethoscope"
         case .bootstrap: "sparkles.rectangle.stack"
         case .settings: "gearshape"

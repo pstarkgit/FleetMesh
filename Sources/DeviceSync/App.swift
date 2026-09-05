@@ -6,35 +6,29 @@ import SwiftUI
 struct DeviceSyncApp: App {
     @NSApplicationDelegateAdaptor(DeviceSyncAppDelegate.self) private var appDelegate
     @State private var appState = DeviceSyncAppState.shared
+    @State private var appearance = FleetMeshAppearanceStore.shared
 
     init() {
-        // FleetMesh uses a deliberately light evidence canvas. Pin the
-        // AppKit appearance too: setting only SwiftUI's colorScheme left native
-        // hosting layers in Aqua Dark, which turned bold primary labels white
-        // on the light canvas after a Developer ID install.
-        NSApplication.shared.appearance = NSAppearance(named: .aqua)
-
         let arguments = CommandLine.arguments
         if arguments.contains("--version") {
             print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current)")
             exit(0)
         }
-        if arguments.contains("--check")
-            || arguments.contains("--snapshot")
-            || arguments.contains("--adopt-baseline") {
-            Self.runHeadless(
-                snapshotOnly: arguments.contains("--snapshot"),
-                adoptBaseline: arguments.contains("--adopt-baseline")
-            )
+        if let operation = HeadlessOperation(arguments: arguments) {
+            Self.runHeadless(operation: operation)
         }
     }
 
     var body: some Scene {
         Window(FleetMeshIdentity.productName, id: DeviceSyncWindow.main) {
-            RootView(store: appState.store, navigation: appState.navigation)
+            RootView(
+                store: appState.store,
+                navigation: appState.navigation,
+                appearance: appearance
+            )
                 .frame(minWidth: 1040, minHeight: 720)
-                .preferredColorScheme(.light)
-                .background(AquaWindowAppearance())
+                .preferredColorScheme(appearance.selection.colorScheme)
+                .background(AdaptiveWindowAppearance(selection: appearance.selection))
                 .background(DeviceSyncWindowRegistrar(appState: appState))
                 .task { await appState.store.start() }
         }
@@ -49,7 +43,7 @@ struct DeviceSyncApp: App {
         }
     }
 
-    private static func runHeadless(snapshotOnly: Bool, adoptBaseline: Bool) -> Never {
+    private static func runHeadless(operation: HeadlessOperation) -> Never {
         let semaphore = DispatchSemaphore(value: 0)
         Task.detached {
             defer { semaphore.signal() }
@@ -64,8 +58,8 @@ struct DeviceSyncApp: App {
                     rootURL: URL(fileURLWithPath: state.fleetRootPath, isDirectory: true)
                 )
                 let url = try repository.publish(snapshot)
-                if adoptBaseline
-                    || (!snapshotOnly
+                if operation == .adoptBaseline
+                    || (operation == .check
                         && !repository.manifestExists
                         && LocalStateRepository.maySeedInitialManifest(
                             state: state,
@@ -73,14 +67,36 @@ struct DeviceSyncApp: App {
                         )) {
                     try repository.saveManifest(FleetManifest(snapshot: snapshot))
                 }
-                let read = repository.load()
+                var read = repository.load()
+                if case .setManaged(let componentID, let managed) = operation {
+                    guard let manifest = read.manifest else {
+                        throw HeadlessOperationError.missingManifest
+                    }
+                    let updated = try manifest.settingManaged(
+                        componentID: componentID,
+                        managed: managed,
+                        observation: snapshot.component(componentID),
+                        updatedByMachineID: state.machineID
+                    )
+                    try repository.saveManifest(
+                        updated,
+                        replacingRevision: manifest.revision
+                    )
+                    read = repository.load()
+                }
                 let assessment = DriftEngine().assess(snapshot: snapshot, manifest: read.manifest)
-                if snapshotOnly {
+                switch operation {
+                case .snapshot:
                     print("snapshot: \(url.path)")
-                } else if adoptBaseline {
+                case .adoptBaseline:
                     print("baseline: \(repository.manifestURL.path)")
                     print("targets: \(read.manifest?.activeTargets.count ?? 0)")
-                } else {
+                case .setManaged(let componentID, let managed):
+                    print("scope: \(componentID) \(managed ? "managed" : "unmanaged")")
+                    print("baseline: \(repository.manifestURL.path)")
+                    print("targets: \(read.manifest?.activeTargets.count ?? 0)")
+                    print("snapshot: \(url.path)")
+                case .check:
                     print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current): OK")
                     print("machine: \(snapshot.name) (\(snapshot.hostName))")
                     print("fleet folder: \(repository.rootURL.path)")
@@ -97,6 +113,39 @@ struct DeviceSyncApp: App {
     }
 }
 
+enum HeadlessOperation: Equatable {
+    case check
+    case snapshot
+    case adoptBaseline
+    case setManaged(componentID: String, managed: Bool)
+
+    init?(arguments: [String]) {
+        if arguments.contains("--check") {
+            self = .check
+        } else if arguments.contains("--snapshot") {
+            self = .snapshot
+        } else if arguments.contains("--adopt-baseline") {
+            self = .adoptBaseline
+        } else if let index = arguments.firstIndex(of: "--add-to-scope"),
+                  arguments.indices.contains(index + 1) {
+            self = .setManaged(componentID: arguments[index + 1], managed: true)
+        } else if let index = arguments.firstIndex(of: "--remove-from-scope"),
+                  arguments.indices.contains(index + 1) {
+            self = .setManaged(componentID: arguments[index + 1], managed: false)
+        } else {
+            return nil
+        }
+    }
+}
+
+private enum HeadlessOperationError: LocalizedError {
+    case missingManifest
+
+    var errorDescription: String? {
+        "No fleet baseline is available. Connect the shared fleet folder before changing scope."
+    }
+}
+
 enum DeviceSyncWindow {
     static let main = "main"
 }
@@ -108,6 +157,7 @@ final class DeviceSyncAppState {
 
     let store: FleetStore
     let navigation: AppNavigation
+    let appearance: FleetMeshAppearanceStore
 
     private var statusItemController: DeviceSyncStatusItemController?
     private var openMainWindow: (() -> Void)?
@@ -115,12 +165,14 @@ final class DeviceSyncAppState {
     private init() {
         store = FleetStore()
         navigation = AppNavigation()
+        appearance = FleetMeshAppearanceStore.shared
     }
 
     func installStatusItem() {
         guard statusItemController == nil else { return }
         statusItemController = DeviceSyncStatusItemController(
             store: store,
+            appearance: appearance,
             openSection: { [weak self] section in self?.show(section) }
         )
     }
@@ -133,25 +185,43 @@ final class DeviceSyncAppState {
         navigation.open(section)
         openMainWindow?()
         NSApp.activate(ignoringOtherApps: true)
+        bringMainWindowForward(attemptsRemaining: 12)
+    }
 
-        // Opening a SwiftUI scene is asynchronous. Bring the singleton forward
-        // on the next run loop and restore it if it was minimized.
-        DispatchQueue.main.async {
-            guard let window = NSApp.windows.first(where: {
-                $0.title == FleetMeshIdentity.productName
-            }) else {
-                return
-            }
+    private func bringMainWindowForward(attemptsRemaining: Int) {
+        guard attemptsRemaining > 0 else { return }
+        if let window = NSApp.windows.first(where: {
+            $0.title == FleetMeshIdentity.productName
+        }) {
             window.deminiaturize(nil)
             window.makeKeyAndOrderFront(nil)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.bringMainWindowForward(attemptsRemaining: attemptsRemaining - 1)
         }
     }
 }
 
 @MainActor
-private final class DeviceSyncAppDelegate: NSObject, NSApplicationDelegate {
+final class DeviceSyncAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        DeviceSyncAppState.shared.appearance.apply()
         DeviceSyncAppState.shared.installStatusItem()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        if !flag {
+            DeviceSyncAppState.shared.show(.fleet)
+        }
+        return true
     }
 }
 
@@ -170,34 +240,31 @@ private struct DeviceSyncWindowRegistrar: View {
         }
 }
 
-/// Pins the actual AppKit window to Aqua once SwiftUI has created it.
-///
-/// `preferredColorScheme(.light)` controls SwiftUI's environment but does not
-/// reliably change the native `NSWindow`/toolbar appearance when the system is
-/// in Dark Mode. That mismatch was visible in acceptance captures: the light
-/// canvas rendered correctly while native and nested primary labels stayed
-/// white. The window is the authoritative appearance boundary.
-private struct AquaWindowAppearance: NSViewRepresentable {
-    func makeNSView(context: Context) -> AquaWindowSentinel {
-        AquaWindowSentinel()
+/// Keeps native AppKit chrome and the SwiftUI canvas on the same persisted
+/// System/Light/Dark selection.
+private struct AdaptiveWindowAppearance: NSViewRepresentable {
+    let selection: FleetMeshAppearance
+
+    func makeNSView(context: Context) -> AdaptiveWindowSentinel {
+        AdaptiveWindowSentinel()
     }
 
-    func updateNSView(_ nsView: AquaWindowSentinel, context: Context) {
-        nsView.applyAppearance()
+    func updateNSView(_ nsView: AdaptiveWindowSentinel, context: Context) {
+        nsView.applyAppearance(selection)
     }
 }
 
 @MainActor
-private final class AquaWindowSentinel: NSView {
+private final class AdaptiveWindowSentinel: NSView {
+    private var selection: FleetMeshAppearance = .system
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        applyAppearance()
+        applyAppearance(selection)
     }
 
-    func applyAppearance() {
-        guard let aqua = NSAppearance(named: .aqua) else { return }
-        NSApp.appearance = aqua
-        window?.appearance = aqua
-        window?.contentView?.appearance = aqua
+    func applyAppearance(_ selection: FleetMeshAppearance) {
+        self.selection = selection
+        FleetMeshAppearanceStore.shared.apply(to: window)
     }
 }

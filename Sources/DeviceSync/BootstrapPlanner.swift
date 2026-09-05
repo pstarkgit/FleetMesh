@@ -13,7 +13,9 @@ struct BootstrapPlanner: Sendable {
         ]
 
         for drift in assessment.drifts
-            where drift.state != .aligned && drift.state != .notManaged {
+            where drift.state != .aligned
+                && drift.state != .notManaged
+                && drift.state != .notApplicable {
             steps.append(step(for: drift))
         }
 

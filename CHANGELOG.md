@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.1.7 — 2026-09-04
+
+- Added the cross-platform device model for macOS and Linux devices, with
+  workstation, server, and cloud-desktop roles plus explicit capability tracking
+  for GUI, Mac apps, menu bar, launchd, systemd, shell, and config files.
+- Upgraded the desired-state manifest to schema v2 with explicit device
+  enrollment, removal, role assignment, and per-device Inherit/Required/Excluded
+  item policy while preserving snapshot schema v1 through additive platform and
+  capability fields.
+- Added local-only Linux SSH check-in: endpoints stay in this controller Mac's
+  legacy Application Support state, shared JSON receives only redacted evidence,
+  and the probe uses a fixed bounded read-only script through the user's existing
+  SSH config and agent.
+- Kept Doctor local-only and evidence-gated: remote devices can check in, but
+  repairs remain explicit local actions backed by product-owned entrypoints and
+  postflight snapshots.
+- Made Codex Voice observable but outside the managed daily baseline so it does
+  not create normal posture, Bootstrap, or Doctor work.
+- Reaffirmed Kiro Crew as the active managed agent product and MeshClaw as
+  retired compatibility evidence that readers ignore.
+- Documented menu-bar/full-app reliability: closing the singleton window keeps
+  FleetMesh alive in the menu bar, and Dock/menu actions reopen the same live
+  app state.
+- Added a persisted System/Light/Dark appearance control shared by the full app
+  and menu-bar command center, with a dark Aurora evidence canvas.
+- Reworked the 19-point menu-bar mark for crowded real-world bars: a full-size
+  white-core Aurora bridge replaces the dim glyph and overlapping status badge.
+- Added a reversible local Hide action for unwanted Available discoveries, plus
+  a collapsed Hidden items section for restoring them without changing shared
+  fleet scope, inventory evidence, or installed software.
+- Preserved all legacy compatibility identifiers, including
+  `dev.starkpat.devicesync`, `DeviceSync`, `device-sync`,
+  `deviceSyncVersion`, the `Device Sync` folders, LaunchAgent label, and
+  status-item autosave name.
+
+## 0.1.6 — 2026-09-04
+
+- Added explicit Managed Items controls in Settings so individual apps, tools,
+  configurations, and themes can enter or leave fleet scope without replacing
+  the entire baseline.
+- Kept removed items discoverable as observed evidence while excluding them
+  from daily Fleet posture, Bootstrap work, Doctor findings, and attention
+  counts; scope changes never uninstall apps or delete source.
+- Protected item-level baseline edits with fresh local evidence, atomic writes,
+  and manifest-revision checks so a stale Mac cannot overwrite newer scope.
+- Added guarded `--add-to-scope` and `--remove-from-scope` operator commands for
+  recovery and automation through the same manifest contract as the UI.
+- Kept the menu-bar command center alive after the full window closes, made
+  Dock/menu-bar reopening resilient to asynchronous SwiftUI window creation,
+  and documented the lifecycle directly in the popover.
+- Improved timestamps, shared busy states, success/error feedback, managed-only
+  Fleet copy, and direct navigation to Managed Items.
+
 ## 0.1.5 — 2026-09-04
 
 - Renamed the visible product and installed bundle to FleetMesh while retaining

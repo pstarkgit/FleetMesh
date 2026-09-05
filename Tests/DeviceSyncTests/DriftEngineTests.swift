@@ -133,6 +133,47 @@ struct DriftEngineTests {
         #expect(assessment.drifts.contains { $0.componentID == "device-sync" && $0.state == .notManaged })
         #expect(assessment.attentionCount == 0)
         #expect(assessment.verdict == .aligned)
+        #expect(!assessment.managedDrifts.contains { $0.componentID == "device-sync" })
+    }
+
+    @Test
+    func removedComponentLeavesDailyManagedPostureButRemainsDiscoverable() throws {
+        let authBar = fixtureComponent()
+        let codexVoice = ComponentObservation(
+            id: "codex-voice",
+            name: "Codex Voice",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.1.0",
+            sourceDirty: true,
+            evidence: "Installed bundle and dirty source"
+        )
+        let snapshot = fixtureSnapshot(components: [authBar, codexVoice])
+        let original = FleetManifest(snapshot: snapshot)
+        let managed = try original.settingManaged(
+            componentID: codexVoice.id,
+            managed: true,
+            observation: codexVoice,
+            updatedByMachineID: snapshot.machineID
+        )
+        let manifest = try managed.settingManaged(
+            componentID: codexVoice.id,
+            managed: false,
+            observation: codexVoice,
+            updatedByMachineID: snapshot.machineID
+        )
+
+        let assessment = DriftEngine().assess(snapshot: snapshot, manifest: manifest)
+
+        #expect(assessment.drifts.contains {
+            $0.componentID == codexVoice.id && $0.state == .notManaged
+        })
+        #expect(!assessment.managedDrifts.contains { $0.componentID == codexVoice.id })
+        #expect(assessment.attentionCount == 0)
+        #expect(DoctorPlanner().findings(for: assessment, manifest: manifest).isEmpty)
+        #expect(BootstrapPlanner().plan(for: assessment).allSatisfy {
+            $0.componentID != codexVoice.id
+        })
     }
 
     @Test

@@ -14,12 +14,28 @@ struct DriftEngine: Sendable {
     ) -> MachineAssessment {
         let drifts: [ComponentDrift]
         if let manifest {
-            let activeTargets = manifest.activeTargets
+            let activeTargets = manifest.scopedTargets(for: snapshot)
             let activeObservations = snapshot.components.filter {
                 ComponentLifecycle.isActive($0.id)
             }
             let targetDrifts = activeTargets.map { target in
-                assess(target: target, observation: snapshot.component(target.id))
+                let applicability = target.applicability(to: snapshot)
+                guard applicability.isApplicable else {
+                    return ComponentDrift(
+                        componentID: target.id,
+                        name: ComponentLifecycle.displayName(
+                            for: target.id,
+                            fallback: target.name
+                        ),
+                        kind: target.kind,
+                        state: .notApplicable,
+                        severity: .information,
+                        summary: applicability.reason,
+                        expected: nil,
+                        observed: snapshot.component(target.id).flatMap(observedSummary)
+                    )
+                }
+                return assess(target: target, observation: snapshot.component(target.id))
             }
             let targetIDs = Set(activeTargets.map(\.id))
             let observedOnly = activeObservations
@@ -36,7 +52,7 @@ struct DriftEngine: Sendable {
                         severity: .information,
                         summary: observation.status == .missing
                             ? "This optional component is absent and is not required by the baseline."
-                            : "This component is observed on the Mac but is not part of the fleet baseline.",
+                            : "This component is observed on the device but is not part of the fleet baseline.",
                         expected: nil,
                         observed: observation.status == .missing ? "Missing" : observedSummary(observation)
                     )

@@ -3,6 +3,18 @@ import Testing
 
 struct FleetMeshIdentityTests {
     @Test
+    func headlessScopeCommandsRequireExplicitComponentIDs() {
+        #expect(
+            HeadlessOperation(arguments: ["DeviceSync", "--remove-from-scope", "codex-voice"])
+                == .setManaged(componentID: "codex-voice", managed: false)
+        )
+        #expect(
+            HeadlessOperation(arguments: ["DeviceSync", "--add-to-scope", "codex-voice"])
+                == .setManaged(componentID: "codex-voice", managed: true)
+        )
+        #expect(HeadlessOperation(arguments: ["DeviceSync", "--remove-from-scope"]) == nil)
+    }
+    @Test
     func visibleProductUsesFleetMeshWithStableCompatibilityIDs() throws {
         #expect(FleetMeshIdentity.productName == "FleetMesh")
         #expect(FleetMeshIdentity.installedAppPath == "/Applications/FleetMesh.app")
