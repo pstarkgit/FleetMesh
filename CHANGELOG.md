@@ -23,6 +23,10 @@
 - Documented menu-bar/full-app reliability: closing the singleton window keeps
   FleetMesh alive in the menu bar, and Dock/menu actions reopen the same live
   app state.
+- Added a persisted System/Light/Dark appearance control shared by the full app
+  and menu-bar command center, with a dark Aurora evidence canvas.
+- Reworked the 19-point menu-bar mark for crowded real-world bars: a full-size
+  white-core Aurora bridge replaces the dim glyph and overlapping status badge.
 - Preserved all legacy compatibility identifiers, including
   `dev.starkpat.devicesync`, `DeviceSync`, `device-sync`,
   `deviceSyncVersion`, the `Device Sync` folders, LaunchAgent label, and

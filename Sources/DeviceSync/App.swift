@@ -6,14 +6,9 @@ import SwiftUI
 struct DeviceSyncApp: App {
     @NSApplicationDelegateAdaptor(DeviceSyncAppDelegate.self) private var appDelegate
     @State private var appState = DeviceSyncAppState.shared
+    @State private var appearance = FleetMeshAppearanceStore.shared
 
     init() {
-        // FleetMesh uses a deliberately light evidence canvas. Pin the
-        // AppKit appearance too: setting only SwiftUI's colorScheme left native
-        // hosting layers in Aqua Dark, which turned bold primary labels white
-        // on the light canvas after a Developer ID install.
-        NSApplication.shared.appearance = NSAppearance(named: .aqua)
-
         let arguments = CommandLine.arguments
         if arguments.contains("--version") {
             print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current)")
@@ -26,10 +21,14 @@ struct DeviceSyncApp: App {
 
     var body: some Scene {
         Window(FleetMeshIdentity.productName, id: DeviceSyncWindow.main) {
-            RootView(store: appState.store, navigation: appState.navigation)
+            RootView(
+                store: appState.store,
+                navigation: appState.navigation,
+                appearance: appearance
+            )
                 .frame(minWidth: 1040, minHeight: 720)
-                .preferredColorScheme(.light)
-                .background(AquaWindowAppearance())
+                .preferredColorScheme(appearance.selection.colorScheme)
+                .background(AdaptiveWindowAppearance(selection: appearance.selection))
                 .background(DeviceSyncWindowRegistrar(appState: appState))
                 .task { await appState.store.start() }
         }
@@ -158,6 +157,7 @@ final class DeviceSyncAppState {
 
     let store: FleetStore
     let navigation: AppNavigation
+    let appearance: FleetMeshAppearanceStore
 
     private var statusItemController: DeviceSyncStatusItemController?
     private var openMainWindow: (() -> Void)?
@@ -165,12 +165,14 @@ final class DeviceSyncAppState {
     private init() {
         store = FleetStore()
         navigation = AppNavigation()
+        appearance = FleetMeshAppearanceStore.shared
     }
 
     func installStatusItem() {
         guard statusItemController == nil else { return }
         statusItemController = DeviceSyncStatusItemController(
             store: store,
+            appearance: appearance,
             openSection: { [weak self] section in self?.show(section) }
         )
     }
@@ -204,6 +206,7 @@ final class DeviceSyncAppState {
 @MainActor
 final class DeviceSyncAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        DeviceSyncAppState.shared.appearance.apply()
         DeviceSyncAppState.shared.installStatusItem()
     }
 
@@ -237,34 +240,31 @@ private struct DeviceSyncWindowRegistrar: View {
         }
 }
 
-/// Pins the actual AppKit window to Aqua once SwiftUI has created it.
-///
-/// `preferredColorScheme(.light)` controls SwiftUI's environment but does not
-/// reliably change the native `NSWindow`/toolbar appearance when the system is
-/// in Dark Mode. That mismatch was visible in acceptance captures: the light
-/// canvas rendered correctly while native and nested primary labels stayed
-/// white. The window is the authoritative appearance boundary.
-private struct AquaWindowAppearance: NSViewRepresentable {
-    func makeNSView(context: Context) -> AquaWindowSentinel {
-        AquaWindowSentinel()
+/// Keeps native AppKit chrome and the SwiftUI canvas on the same persisted
+/// System/Light/Dark selection.
+private struct AdaptiveWindowAppearance: NSViewRepresentable {
+    let selection: FleetMeshAppearance
+
+    func makeNSView(context: Context) -> AdaptiveWindowSentinel {
+        AdaptiveWindowSentinel()
     }
 
-    func updateNSView(_ nsView: AquaWindowSentinel, context: Context) {
-        nsView.applyAppearance()
+    func updateNSView(_ nsView: AdaptiveWindowSentinel, context: Context) {
+        nsView.applyAppearance(selection)
     }
 }
 
 @MainActor
-private final class AquaWindowSentinel: NSView {
+private final class AdaptiveWindowSentinel: NSView {
+    private var selection: FleetMeshAppearance = .system
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        applyAppearance()
+        applyAppearance(selection)
     }
 
-    func applyAppearance() {
-        guard let aqua = NSAppearance(named: .aqua) else { return }
-        NSApp.appearance = aqua
-        window?.appearance = aqua
-        window?.contentView?.appearance = aqua
+    func applyAppearance(_ selection: FleetMeshAppearance) {
+        self.selection = selection
+        FleetMeshAppearanceStore.shared.apply(to: window)
     }
 }

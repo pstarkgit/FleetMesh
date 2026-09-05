@@ -3,6 +3,7 @@ import SwiftUI
 struct RootView: View {
     @Bindable var store: FleetStore
     @Bindable var navigation: AppNavigation
+    @Bindable var appearance: FleetMeshAppearanceStore
 
     var body: some View {
         NavigationSplitView {
@@ -22,14 +23,9 @@ struct RootView: View {
                 case .bootstrap:
                     BootstrapView(store: store)
                 case .settings:
-                    SettingsView(store: store)
+                    SettingsView(store: store, appearance: appearance)
                 }
             }
-            // The product uses a deliberate light evidence canvas beside the
-            // system-adaptive sidebar. Without pinning this subtree, a Mac in
-            // dark appearance gives default labels white foregrounds while the
-            // canvas remains light, making machine and component names vanish.
-            .environment(\.colorScheme, .light)
             .foregroundColor(DSTheme.ink)
         }
         .navigationSplitViewStyle(.balanced)
@@ -796,7 +792,6 @@ private struct AddDeviceSheet: View {
         }
         .padding(24)
         .frame(width: 510)
-        .environment(\.colorScheme, .light)
         .foregroundStyle(DSTheme.ink)
     }
 }
@@ -1328,7 +1323,7 @@ private struct DoctorPipeline: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(.white)
+                .background(DSTheme.card)
                 .clipShape(Capsule())
                 .padding(12)
             }
@@ -1724,6 +1719,7 @@ private struct BootstrapStepRow: View {
 
 struct SettingsView: View {
     @Bindable var store: FleetStore
+    @Bindable var appearance: FleetMeshAppearanceStore
     @State private var confirmBaseline = false
     @State private var machineNameDraft = ""
     @State private var pendingScopeChange: PendingScopeChange?
@@ -1745,6 +1741,33 @@ struct SettingsView: View {
                 if let error = store.lastError {
                     IssueBanner(title: "Settings change failed", detail: error, color: DSTheme.red)
                 }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    SectionTitle(
+                        title: "Appearance",
+                        subtitle: "Follow macOS or choose a dedicated Light or Dark Aurora canvas"
+                    )
+                    Picker(
+                        "Appearance",
+                        selection: Binding(
+                            get: { appearance.selection },
+                            set: { appearance.select($0) }
+                        )
+                    ) {
+                        ForEach(FleetMeshAppearance.allCases) { option in
+                            Label(option.label, systemImage: option.symbol).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .accessibilityIdentifier("fleetmesh.appearance")
+                    Text(appearance.selection == .system
+                        ? "System follows the current macOS appearance automatically."
+                        : "FleetMesh will stay \(appearance.selection.label.lowercased()) even when macOS changes.")
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkMuted)
+                }
+                .deviceCard()
 
                 VStack(alignment: .leading, spacing: 14) {
                     SectionTitle(title: "This Mac", subtitle: "Human-readable fleet name; the stable ID remains a random local UUID")

@@ -21,12 +21,18 @@ enum DeviceSyncStatusItemPlacement {
 @MainActor
 final class DeviceSyncStatusItemController: NSObject {
     private let store: FleetStore
+    private let appearance: FleetMeshAppearanceStore
     private let openSection: (AppSection) -> Void
     private let statusItem: NSStatusItem
     private let popover: NSPopover
 
-    init(store: FleetStore, openSection: @escaping (AppSection) -> Void) {
+    init(
+        store: FleetStore,
+        appearance: FleetMeshAppearanceStore,
+        openSection: @escaping (AppSection) -> Void
+    ) {
         self.store = store
+        self.appearance = appearance
         self.openSection = openSection
 
         // The anonymous status item SwiftUI created could be pushed into this
@@ -47,6 +53,7 @@ final class DeviceSyncStatusItemController: NSObject {
         popover.contentViewController = NSHostingController(
             rootView: DeviceSyncMenuBarView(
                 store: store,
+                appearance: appearance,
                 openSection: { [weak self] section in
                     self?.popover.performClose(nil)
                     self?.openSection(section)
@@ -94,66 +101,88 @@ final class DeviceSyncStatusItemController: NSObject {
         let summary = store.menuBarSummary
         guard let button = statusItem.button else { return }
         let label = "\(FleetMeshIdentity.productName) — \(summary.headline)"
-        let image = Self.statusItemImage(summary: summary, label: label)
+        let image = FleetMeshStatusIcon.image(label: label)
         button.image = image
         button.imagePosition = .imageOnly
         button.toolTip = "\(label) · \(summary.machineLabel) · \(summary.attentionLabel)"
         button.setAccessibilityLabel(label)
     }
 
-    private static func statusItemImage(summary: MenuBarSummary, label: String) -> NSImage {
+}
+
+enum FleetMeshStatusIcon {
+    static func image(label: String) -> NSImage {
         let size = NSSize(width: 19, height: 19)
         let image = NSImage(size: size, flipped: false) { rect in
-            let markRect = rect.insetBy(dx: 0.7, dy: 0.7)
-            let links = NSBezierPath(FleetMeshMarkGeometry.links(in: markRect))
-            links.lineCapStyle = .round
-            links.lineJoinStyle = .round
-            let nodes = NSBezierPath(FleetMeshMarkGeometry.nodes(in: markRect))
+            let markRect = rect.insetBy(dx: 1.1, dy: 1.1)
+            let left = clusterPath(in: markRect, leading: true)
+            let bridge = bridgePath(in: markRect)
+            let right = clusterPath(in: markRect, leading: false)
+            let complete = NSBezierPath()
+            complete.append(left)
+            complete.append(bridge)
+            complete.append(right)
+            complete.lineCapStyle = .round
+            complete.lineJoinStyle = .round
 
-            // Keep the core crisp and appearance-adaptive, then add the same
-            // restrained Aurora bloom used by the installed app icon. The
-            // image stays non-template so AppKit preserves the colored glow.
+            let emerald = NSColor(
+                calibratedRed: 0.12,
+                green: 0.95,
+                blue: 0.67,
+                alpha: 1
+            )
+            let cyan = NSColor(
+                calibratedRed: 0.13,
+                green: 0.87,
+                blue: 1,
+                alpha: 1
+            )
+            let indigo = NSColor(
+                calibratedRed: 0.67,
+                green: 0.49,
+                blue: 1,
+                alpha: 1
+            )
+
+            // Use the full square for a bright Aurora silhouette. Fleet health
+            // stays in the tooltip and popover instead of obscuring the mark.
             if let context = NSGraphicsContext.current?.cgContext {
                 context.saveGState()
                 context.setShadow(
                     offset: .zero,
-                    blur: 2.6,
-                    color: NSColor(
-                        calibratedRed: 0.13,
-                        green: 0.83,
-                        blue: 0.93,
-                        alpha: 0.95
-                    ).cgColor
+                    blur: 4.0,
+                    color: cyan.cgColor
                 )
-                links.lineWidth = 2.15
-                NSColor(
-                    calibratedRed: 0.38,
-                    green: 0.98,
-                    blue: 0.82,
-                    alpha: 0.72
-                ).setStroke()
-                links.stroke()
-                NSColor(
-                    calibratedRed: 0.38,
-                    green: 0.98,
-                    blue: 0.82,
-                    alpha: 0.68
-                ).setFill()
-                nodes.fill()
+                complete.lineWidth = 4.2
+                cyan.setStroke()
+                complete.stroke()
+                cyan.setFill()
+                endpointNodes(in: markRect, radius: 2.55).forEach { nodeRect in
+                    NSBezierPath(ovalIn: nodeRect).fill()
+                }
                 context.restoreGState()
             }
 
-            links.lineWidth = 1.25
-            NSColor.labelColor.setStroke()
-            links.stroke()
-            NSColor.labelColor.setFill()
-            nodes.fill()
+            left.lineWidth = 3.2
+            emerald.setStroke()
+            left.stroke()
+            bridge.lineWidth = 3.3
+            cyan.setStroke()
+            bridge.stroke()
+            right.lineWidth = 3.2
+            indigo.setStroke()
+            right.stroke()
 
-            let badgeRect = NSRect(x: 12.3, y: 0.7, width: 5.8, height: 5.8)
-            NSColor.controlBackgroundColor.setFill()
-            NSBezierPath(ovalIn: badgeRect.insetBy(dx: -0.9, dy: -0.9)).fill()
-            Self.badgeColor(for: summary).setFill()
-            NSBezierPath(ovalIn: badgeRect).fill()
+            complete.lineWidth = 1.25
+            NSColor.white.setStroke()
+            complete.stroke()
+
+            for (index, nodeRect) in endpointNodes(in: markRect, radius: 2.25).enumerated() {
+                (index < 2 ? emerald : indigo).setFill()
+                NSBezierPath(ovalIn: nodeRect).fill()
+                NSColor.white.setFill()
+                NSBezierPath(ovalIn: nodeRect.insetBy(dx: 1.2, dy: 1.2)).fill()
+            }
             return true
         }
         image.accessibilityDescription = label
@@ -161,14 +190,44 @@ final class DeviceSyncStatusItemController: NSObject {
         return image
     }
 
-    private static func badgeColor(for summary: MenuBarSummary) -> NSColor {
-        if summary.isScanning { return .systemBlue }
-        if summary.errorMessage != nil { return .systemRed }
-        switch summary.verdict {
-        case .aligned: return .systemGreen
-        case .attention: return .systemOrange
-        case .critical: return .systemRed
-        case .unknown: return .systemGray
+    private static func clusterPath(in rect: NSRect, leading: Bool) -> NSBezierPath {
+        let outerX = leading
+            ? rect.minX + rect.width * 0.08
+            : rect.maxX - rect.width * 0.08
+        let innerX = leading
+            ? rect.minX + rect.width * 0.42
+            : rect.maxX - rect.width * 0.42
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: outerX, y: rect.maxY - rect.height * 0.08))
+        path.line(to: NSPoint(x: innerX, y: rect.midY))
+        path.line(to: NSPoint(x: outerX, y: rect.minY + rect.height * 0.08))
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        return path
+    }
+
+    private static func bridgePath(in rect: NSRect) -> NSBezierPath {
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: rect.minX + rect.width * 0.42, y: rect.midY))
+        path.line(to: NSPoint(x: rect.maxX - rect.width * 0.42, y: rect.midY))
+        path.lineCapStyle = .round
+        return path
+    }
+
+    private static func endpointNodes(in rect: NSRect, radius: CGFloat) -> [NSRect] {
+        let centers = [
+            NSPoint(x: rect.minX + rect.width * 0.08, y: rect.maxY - rect.height * 0.08),
+            NSPoint(x: rect.minX + rect.width * 0.08, y: rect.minY + rect.height * 0.08),
+            NSPoint(x: rect.maxX - rect.width * 0.08, y: rect.maxY - rect.height * 0.08),
+            NSPoint(x: rect.maxX - rect.width * 0.08, y: rect.minY + rect.height * 0.08),
+        ]
+        return centers.map { center in
+            NSRect(
+                x: center.x - radius,
+                y: center.y - radius,
+                width: radius * 2,
+                height: radius * 2
+            )
         }
     }
 }
@@ -254,6 +313,7 @@ struct MenuBarSummary: Equatable, Sendable {
 
 struct DeviceSyncMenuBarView: View {
     @Bindable var store: FleetStore
+    @Bindable var appearance: FleetMeshAppearanceStore
     let openSection: (AppSection) -> Void
     let quit: () -> Void
 
@@ -270,7 +330,7 @@ struct DeviceSyncMenuBarView: View {
         }
         .frame(width: 350)
         .background(DSTheme.canvas)
-        .environment(\.colorScheme, .light)
+        .preferredColorScheme(appearance.selection.colorScheme)
         .task { await store.start() }
         .accessibilityIdentifier("devicesync.menu")
     }
@@ -294,9 +354,33 @@ struct DeviceSyncMenuBarView: View {
                     .foregroundStyle(DSTheme.inkMuted)
             }
             Spacer()
-            Text("v\(DeviceSyncVersion.current)")
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(DSTheme.inkMuted)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("v\(DeviceSyncVersion.current)")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(DSTheme.inkMuted)
+                Menu {
+                    ForEach(FleetMeshAppearance.allCases) { option in
+                        Button {
+                            appearance.select(option)
+                        } label: {
+                            Label(
+                                option.label,
+                                systemImage: appearance.selection == option
+                                    ? "checkmark"
+                                    : option.symbol
+                            )
+                        }
+                    }
+                } label: {
+                    Image(systemName: appearance.selection.symbol)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(DSTheme.cyan)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel("Appearance: \(appearance.selection.label)")
+                .accessibilityIdentifier("fleetmesh.menu.appearance")
+            }
         }
         .padding(16)
     }
@@ -462,7 +546,7 @@ private struct MenuMetric: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity)
-        .background(.white.opacity(0.86))
+        .background(DSTheme.card)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)

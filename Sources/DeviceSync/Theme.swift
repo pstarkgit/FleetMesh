@@ -1,18 +1,137 @@
+import AppKit
+import Observation
 import SwiftUI
 
+enum FleetMeshAppearance: String, CaseIterable, Identifiable, Sendable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: "System"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .system: "circle.lefthalf.filled"
+        case .light: "sun.max.fill"
+        case .dark: "moon.stars.fill"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+
+    var appKitAppearance: NSAppearance? {
+        switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
+@MainActor
+@Observable
+final class FleetMeshAppearanceStore {
+    static let shared = FleetMeshAppearanceStore()
+    static let defaultsKey = "dev.starkpat.devicesync.appearance"
+
+    private(set) var selection: FleetMeshAppearance
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        selection = defaults.string(forKey: Self.defaultsKey)
+            .flatMap(FleetMeshAppearance.init(rawValue:))
+            ?? .system
+    }
+
+    func select(_ appearance: FleetMeshAppearance) {
+        guard selection != appearance else { return }
+        selection = appearance
+        defaults.set(appearance.rawValue, forKey: Self.defaultsKey)
+        apply()
+    }
+
+    func apply(to window: NSWindow? = nil) {
+        let resolved = selection.appKitAppearance
+        window?.appearance = resolved
+        window?.contentView?.appearance = resolved
+
+        // `NSApp` is still nil when Swift Testing constructs this store before
+        // the application lifecycle begins. Persisting a selection must remain
+        // safe in that launch-order window; the app delegate applies it once
+        // AppKit is ready.
+        guard let application = NSApp else { return }
+        application.appearance = resolved
+        for appWindow in application.windows {
+            appWindow.appearance = resolved
+            appWindow.contentView?.appearance = resolved
+        }
+    }
+}
+
 enum DSTheme {
-    static let ink = Color(red: 0.08, green: 0.11, blue: 0.17)
-    static let inkSoft = Color(red: 0.31, green: 0.36, blue: 0.44)
-    static let inkMuted = Color(red: 0.49, green: 0.53, blue: 0.60)
-    static let canvas = Color(red: 0.955, green: 0.965, blue: 0.98)
-    static let card = Color.white.opacity(0.92)
-    static let line = Color(red: 0.85, green: 0.87, blue: 0.91)
-    static let blue = Color(red: 0.18, green: 0.48, blue: 0.94)
-    static let cyan = Color(red: 0.08, green: 0.70, blue: 0.84)
-    static let green = Color(red: 0.10, green: 0.66, blue: 0.43)
-    static let orange = Color(red: 0.94, green: 0.50, blue: 0.12)
-    static let red = Color(red: 0.88, green: 0.23, blue: 0.25)
-    static let purple = Color(red: 0.52, green: 0.31, blue: 0.90)
+    static let ink = adaptive(
+        light: (0.08, 0.11, 0.17, 1),
+        dark: (0.92, 0.95, 0.99, 1)
+    )
+    static let inkSoft = adaptive(
+        light: (0.31, 0.36, 0.44, 1),
+        dark: (0.70, 0.75, 0.82, 1)
+    )
+    static let inkMuted = adaptive(
+        light: (0.49, 0.53, 0.60, 1),
+        dark: (0.52, 0.58, 0.67, 1)
+    )
+    static let canvas = adaptive(
+        light: (0.955, 0.965, 0.98, 1),
+        dark: (0.025, 0.043, 0.070, 1)
+    )
+    static let card = adaptive(
+        light: (1, 1, 1, 0.92),
+        dark: (0.055, 0.082, 0.125, 0.94)
+    )
+    static let line = adaptive(
+        light: (0.85, 0.87, 0.91, 1),
+        dark: (0.15, 0.20, 0.29, 1)
+    )
+    static let blue = adaptive(
+        light: (0.18, 0.48, 0.94, 1),
+        dark: (0.34, 0.60, 1.0, 1)
+    )
+    static let cyan = adaptive(
+        light: (0.08, 0.70, 0.84, 1),
+        dark: (0.20, 0.86, 0.94, 1)
+    )
+    static let green = adaptive(
+        light: (0.10, 0.66, 0.43, 1),
+        dark: (0.20, 0.83, 0.60, 1)
+    )
+    static let orange = adaptive(
+        light: (0.94, 0.50, 0.12, 1),
+        dark: (0.98, 0.66, 0.25, 1)
+    )
+    static let red = adaptive(
+        light: (0.88, 0.23, 0.25, 1),
+        dark: (0.98, 0.43, 0.52, 1)
+    )
+    static let purple = adaptive(
+        light: (0.52, 0.31, 0.90, 1),
+        dark: (0.68, 0.55, 0.98, 1)
+    )
 
     // Shared Aurora family identity, byte-for-byte with AuthBar, Stow, and
     // Murmur's Aurora canvas. Operational colors above remain semantic; these
@@ -55,6 +174,23 @@ enum DSTheme {
         case .notApplicable: inkMuted
         }
     }
+
+    private static func adaptive(
+        light: (CGFloat, CGFloat, CGFloat, CGFloat),
+        dark: (CGFloat, CGFloat, CGFloat, CGFloat)
+    ) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let values = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? dark
+                : light
+            return NSColor(
+                srgbRed: values.0,
+                green: values.1,
+                blue: values.2,
+                alpha: values.3
+            )
+        })
+    }
 }
 
 struct CardModifier: ViewModifier {
@@ -67,7 +203,7 @@ struct CardModifier: ViewModifier {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(DSTheme.line, lineWidth: 1)
             }
-            .shadow(color: .black.opacity(0.035), radius: 10, y: 4)
+            .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
     }
 }
 
