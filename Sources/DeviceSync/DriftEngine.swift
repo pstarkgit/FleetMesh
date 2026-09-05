@@ -10,7 +10,7 @@ struct DriftEngine: Sendable {
     func assess(
         snapshot: MachineSnapshot,
         manifest: FleetManifest?,
-        repositoryTargets: [String: RepositoryBuildTarget] = [:],
+        productVersionTargets: [String: ProductVersionTarget] = [:],
         now: Date = Date()
     ) -> MachineAssessment {
         let drifts: [ComponentDrift]
@@ -22,7 +22,7 @@ struct DriftEngine: Sendable {
             let targetDrifts = activeTargets.map { baseline in
                 let target = ResolvedFleetTarget(
                     baseline: baseline,
-                    repositoryBuild: repositoryTargets[baseline.id]
+                    productVersion: productVersionTargets[baseline.id]
                 )
                 let applicability = target.applicability(to: snapshot)
                 guard applicability.isApplicable else {
@@ -145,7 +145,22 @@ struct DriftEngine: Sendable {
             break
         }
 
-        if observation.sourceDirty == true {
+        if target.productVersionCheckUnavailable {
+            return ComponentDrift(
+                componentID: target.id,
+                name: displayName,
+                kind: target.kind,
+                state: .unknown,
+                severity: .attention,
+                summary: "The product's latest-version check could not be verified. Installed evidence is preserved, but FleetMesh will not claim this app is current.",
+                expected: expectedSummary(target),
+                observed: observedSummary(observation),
+                targetBasis: target.basis
+            )
+        }
+
+        if (target.kind == .configuration || target.kind == .theme),
+           observation.sourceDirty == true {
             return ComponentDrift(
                 componentID: target.id,
                 name: displayName,
@@ -164,63 +179,14 @@ struct DriftEngine: Sendable {
                 return unknownVersion(target: target, observation: observation)
             }
             let comparison = VersionIdentity.compare(observed, expected)
-            let observedIsAcceptable: Bool
-            if let comparison {
-                observedIsAcceptable = target.basis == .savedBaseline
-                    ? comparison != .orderedAscending
-                    : comparison == .orderedSame
-            } else {
-                observedIsAcceptable = false
-            }
+            let observedIsAcceptable = comparison.map { $0 != .orderedAscending } ?? false
             if !observedIsAcceptable {
                 return mismatch(
                     target: target,
                     observation: observation,
-                    summary: target.basis == .latestRepository
-                        ? "Installed version differs from the latest verified repository build."
+                    summary: target.basis == .latestRelease
+                        ? "Installed software is older than the latest version reported by its product update feed."
                         : "Installed software is older than the recorded minimum.",
-                    expected: expected,
-                    observed: observed
-                )
-            }
-        }
-
-        if let installed = observation.installedRevision,
-           let source = observation.sourceRevision,
-           !RevisionIdentity.provesSameBuild(observation) {
-            return ComponentDrift(
-                componentID: target.id,
-                name: displayName,
-                kind: target.kind,
-                state: .different,
-                severity: .attention,
-                summary: "Installed build and source checkout are different revisions; deployment state is not converged.",
-                expected: target.expectedVersion ?? "Source \(source)",
-                observed: observation.installedVersion ?? "Installed \(installed)",
-                targetBasis: target.basis
-            )
-        }
-
-        if target.basis == .latestRepository,
-           let expected = target.expectedInstalledRevision {
-            guard let observed = observation.installedRevision else {
-                return ComponentDrift(
-                    componentID: target.id,
-                    name: displayName,
-                    kind: target.kind,
-                    state: .unknown,
-                    severity: .attention,
-                    summary: "The baseline has an installed revision, but this build does not expose one.",
-                    expected: expected,
-                    observed: observation.installedVersion,
-                    targetBasis: target.basis
-                )
-            }
-            if !RevisionIdentity.matches(expected, observed) {
-                return mismatch(
-                    target: target,
-                    observation: observation,
-                    summary: "Installed build differs from the latest verified repository build.",
                     expected: expected,
                     observed: observed
                 )
@@ -252,28 +218,13 @@ struct DriftEngine: Sendable {
             }
         }
 
-        if target.basis == .latestRepository,
-           let expected = target.expectedSourceRevision,
-           let observed = observation.sourceRevision,
-           !RevisionIdentity.matches(expected, observed) {
-            return mismatch(
-                target: target,
-                observation: observation,
-                summary: "Source checkout differs from the latest verified repository build; nothing was pulled or installed.",
-                expected: expected,
-                observed: observed
-            )
-        }
-
         return ComponentDrift(
             componentID: target.id,
             name: displayName,
             kind: target.kind,
             state: .aligned,
             severity: .information,
-            summary: target.basis == .latestRepository
-                ? "Observed state matches the latest verified repository build."
-                : softwareSummary(target: target, observation: observation),
+            summary: softwareSummary(target: target, observation: observation),
             expected: expectedSummary(target),
             observed: observedSummary(observation),
             targetBasis: target.basis
@@ -328,12 +279,17 @@ struct DriftEngine: Sendable {
         target: ResolvedFleetTarget,
         observation: ComponentObservation
     ) -> String {
-        if target.kind != .configuration,
-           target.kind != .theme,
+        if target.kind != .configuration, target.kind != .theme,
            let expected = target.expectedVersion,
-           let observed = observation.installedVersion,
-           VersionIdentity.compare(observed, expected) == .orderedDescending {
-            return "Observed software is newer than the recorded minimum and is accepted automatically."
+           let observed = observation.installedVersion {
+            if VersionIdentity.compare(observed, expected) == .orderedDescending {
+                return target.basis == .latestRelease
+                    ? "Installed software is newer than the latest version reported by the product and is accepted automatically."
+                    : "Observed software is newer than the recorded minimum and is accepted automatically."
+            }
+            if target.basis == .latestRelease {
+                return "Installed software matches the latest version reported by the product update feed."
+            }
         }
         return target.kind == .configuration || target.kind == .theme
             ? "Observed state matches the saved fleet baseline."
@@ -341,10 +297,11 @@ struct DriftEngine: Sendable {
     }
 
     private func observedSummary(_ observation: ComponentObservation) -> String? {
-        observation.installedVersion
-            ?? observation.installedRevision
-            ?? observation.sourceRevision
-            ?? observation.configurationFingerprint.map(shortFingerprint)
+        if observation.kind == .configuration || observation.kind == .theme {
+            return observation.configurationFingerprint.map(shortFingerprint)
+                ?? observation.sourceRevision
+        }
+        return observation.installedVersion ?? observation.installedRevision
     }
 
     private func shortFingerprint(_ value: String) -> String {

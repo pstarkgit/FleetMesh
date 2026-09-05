@@ -9,7 +9,7 @@ final class FleetStore {
     private(set) var localSnapshot: MachineSnapshot?
     /// Persisted desired state exactly as read from fleet-manifest.json.
     private(set) var manifest: FleetManifest?
-    private(set) var repositoryTargets: [String: RepositoryBuildTarget] = [:]
+    private(set) var productVersionTargets: [String: ProductVersionTarget] = [:]
     private(set) var devices: [FleetDeviceItem] = []
     private(set) var assessments: [MachineAssessment] = []
     private(set) var issues: [FleetIssue] = []
@@ -712,7 +712,7 @@ final class FleetStore {
         doctorPlanner.findings(
             for: assessment,
             manifest: manifest,
-            repositoryTargets: repositoryTargets
+            productVersionTargets: productVersionTargets
         )
     }
 
@@ -758,7 +758,7 @@ final class FleetStore {
                 return
             }
 
-            let preflight = try await scanForDoctor()
+            let preflight = try await scanForDoctor(componentID: componentID)
             guard preflight.machineID == targetMachineID else {
                 finishDoctorRun(
                     componentID: componentID,
@@ -782,18 +782,18 @@ final class FleetStore {
                 )
                 return
             }
-            let approvedRepositoryTargets = repositoryTargets
+            let approvedProductVersionTargets = productVersionTargets
             let approvedTarget = approvedManifest.target(componentID).map {
                 ResolvedFleetTarget(
                     baseline: $0,
-                    repositoryBuild: approvedRepositoryTargets[componentID]
+                    productVersion: approvedProductVersionTargets[componentID]
                 )
             }
 
             let assessment = driftEngine.assess(
                 snapshot: preflight,
                 manifest: approvedManifest,
-                repositoryTargets: approvedRepositoryTargets
+                productVersionTargets: approvedProductVersionTargets
             )
             guard let drift = assessment.drifts.first(where: { $0.componentID == componentID }) else {
                 finishDoctorRun(
@@ -822,7 +822,8 @@ final class FleetStore {
             let finding = doctorPlanner.finding(
                 for: drift,
                 observation: preflight.component(componentID),
-                resolvedTarget: approvedTarget
+                resolvedTarget: approvedTarget,
+                enforceSourcePreflight: true
             )
             guard finding.canRepair, let recipe = finding.recipe else {
                 finishDoctorRun(
@@ -893,9 +894,10 @@ final class FleetStore {
                 )
                 return
             }
-            let executionPreflight = await inventory.capture(
+            let executionPreflight = await inventory.captureForDoctor(
                 machineID: state.machineID,
-                displayName: state.displayName
+                displayName: state.displayName,
+                componentID: componentID
             )
             let executionManifest = await fleetAccess.loadManifest(rootURL: fleetRootURL).manifest
             guard executionManifest?.revision == approvedManifest.revision,
@@ -929,7 +931,7 @@ final class FleetStore {
 
             let postflight: MachineSnapshot
             do {
-                postflight = try await scanForDoctor()
+                postflight = try await scanForDoctor(componentID: componentID)
             } catch {
                 finishDoctorRun(
                     componentID: componentID,
@@ -945,7 +947,7 @@ final class FleetStore {
             let postAssessment = driftEngine.assess(
                 snapshot: postflight,
                 manifest: approvedManifest,
-                repositoryTargets: approvedRepositoryTargets
+                productVersionTargets: approvedProductVersionTargets
             )
             let postDrift = postAssessment.drifts.first { $0.componentID == componentID }
             if commandResult.timedOut {
@@ -982,8 +984,8 @@ final class FleetStore {
                 finishDoctorRun(
                     componentID: componentID,
                     componentName: drift.name,
-                    outcome: .repairedNeedsBaselineReview,
-                    summary: "The installed app now matches its clean source checkout. The fleet baseline still records the prior build and needs a separate explicit decision.",
+                    outcome: .needsAttention,
+                    summary: "The product-owned repair advanced the installed version, but fresh evidence still does not meet the selected version target.",
                     output: commandResult.combinedOutput,
                     startedAt: startedAt
                 )
@@ -1038,19 +1040,32 @@ final class FleetStore {
         }
     }
 
-    private func scanForDoctor() async throws -> MachineSnapshot {
+    private func scanForDoctor(componentID: String) async throws -> MachineSnapshot {
         isRefreshing = true
         defer { isRefreshing = false }
-        return try await scanAndPublish()
+        return try await scanAndPublish(doctorComponentID: componentID)
     }
 
-    private func scanAndPublish(requireManifest: Bool = false) async throws -> MachineSnapshot {
+    private func scanAndPublish(
+        requireManifest: Bool = false,
+        doctorComponentID: String? = nil
+    ) async throws -> MachineSnapshot {
         let state = try localRepository.loadOrCreate()
         localState = state
-        let snapshot = await inventory.capture(
-            machineID: state.machineID,
-            displayName: state.displayName
-        )
+        let captured: MachineSnapshot
+        if let doctorComponentID {
+            captured = await inventory.captureForDoctor(
+                machineID: state.machineID,
+                displayName: state.displayName,
+                componentID: doctorComponentID
+            )
+        } else {
+            captured = await inventory.capture(
+                machineID: state.machineID,
+                displayName: state.displayName
+            )
+        }
+        let snapshot = captured.removingSoftwareCheckoutEvidence()
         localSnapshot = snapshot
 
         let fleetRoot = URL(fileURLWithPath: state.fleetRootPath, isDirectory: true)
@@ -1079,7 +1094,7 @@ final class FleetStore {
 
         apply(read: read, currentSnapshot: snapshot)
         lastRefreshAt = Date()
-        return snapshot
+        return doctorComponentID == nil ? snapshot : captured
     }
 
     private func refreshDetectedExistingFleet() async {
@@ -1128,12 +1143,12 @@ final class FleetStore {
         }
 
         if let persistedManifest = read.manifest {
-            repositoryTargets = RepositoryTargetResolver().resolve(
+            productVersionTargets = ProductVersionTargetResolver().resolve(
                 manifest: persistedManifest,
                 localSnapshot: currentSnapshot
             )
         } else {
-            repositoryTargets = [:]
+            productVersionTargets = [:]
         }
 
         var resolvedIssues = read.issues
@@ -1187,7 +1202,7 @@ final class FleetStore {
             return driftEngine.assess(
                 snapshot: snapshot,
                 manifest: read.manifest,
-                repositoryTargets: repositoryTargets
+                productVersionTargets: productVersionTargets
             )
         }
 
@@ -1201,7 +1216,7 @@ final class FleetStore {
         manifest?.target(componentID).map {
             ResolvedFleetTarget(
                 baseline: $0,
-                repositoryBuild: repositoryTargets[componentID]
+                productVersion: productVersionTargets[componentID]
             )
         }
     }

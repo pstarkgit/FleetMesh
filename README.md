@@ -70,17 +70,19 @@ desired versions or fingerprints, device enrollment, roles, and per-device
 overrides. Changing fleet defaults, enrolling or removing a device, and marking
 an item Required or Excluded are explicit desired-state actions.
 
-For managed software with a local product checkout, FleetMesh reads the version
-declared by this Mac's committed `HEAD` without fetching, pulling, or changing
-it. A fresh, clean checkout may define a newer update target before installation.
-When its version is already installed, installed and source evidence must prove
-the same revision or byte-identical immutable Git trees. An older checkout never
-becomes authority for a newer installed app.
-Synced machine reports never redefine targets. The saved manifest remains the
-fallback and the authority for scope, device policy, and configuration/theme
-fingerprints. Software cards label version provenance as **Latest repo** or
-**Recorded minimum**; exact configuration and theme fingerprints remain explicit
-desired state.
+Managed software posture compares the installed version with a product-owned
+latest-version source when one is available. Murmr Voice, for example, uses its
+signed Sparkle appcast. Products without a machine-readable release check use the
+manifest's **Recorded minimum** conservatively. A failed product check is Unknown,
+not healthy.
+
+Routine scans never inspect developer Git checkouts for software. Branch,
+revision, dirty worktrees, and installed/source commit equality cannot create
+fleet drift or redefine a version target. Checkout inspection occurs only after
+an explicit source-based Doctor repair request, where it is a safety preflight
+that can block a dirty, changed, or downgrade-prone installer. Shared machine
+reports never contain those Doctor-only checkout details. Exact configuration
+and theme fingerprints remain explicit desired state.
 
 Codex Voice remains observable evidence, but it is outside the managed daily
 baseline. FleetMesh should not uninstall it or repair it as part of normal fleet

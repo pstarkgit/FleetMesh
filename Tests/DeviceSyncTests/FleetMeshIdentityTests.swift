@@ -70,6 +70,6 @@ struct FleetMeshIdentityTests {
         )
         #expect(software.targetLabel == "Recorded minimum")
         #expect(theme.targetLabel == "Saved baseline")
-        #expect(FleetTargetBasis.latestRepository.label == "Latest repo")
+        #expect(FleetTargetBasis.latestRelease.label == "Latest available")
     }
 }

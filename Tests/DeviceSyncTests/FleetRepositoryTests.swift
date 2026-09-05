@@ -389,7 +389,9 @@ struct FleetRepositoryTests {
     }
 
     @Test
-    func snapshotMayPublishOnlyImmutableGitTreeHashesForMergeProof() throws {
+    func publishedSnapshotStripsDoctorOnlySoftwareCheckoutEvidence() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
         let tree = "8908725ae4859bc6c4ec5c2d26835fe572b5a8fa"
         let observation = ComponentObservation(
             id: "device-sync",
@@ -406,14 +408,20 @@ struct FleetRepositoryTests {
             evidence: "Immutable merge proof"
         )
         let snapshot = repositoryFixtureSnapshot(components: [observation])
+        let url = try FleetRepository(rootURL: root).publish(snapshot)
         let json = try #require(String(
-            data: FleetJSON.encoder.encode(snapshot),
+            data: Data(contentsOf: url),
             encoding: .utf8
         ))
 
-        #expect(json.contains(#""sourceTree""#))
-        #expect(json.contains(#""installedTree""#))
-        #expect(json.contains(tree))
+        #expect(!json.contains(#""sourceVersion""#))
+        #expect(!json.contains(#""sourceRevision""#))
+        #expect(!json.contains(#""sourceBranch""#))
+        #expect(!json.contains(#""sourceDirty""#))
+        #expect(!json.contains(#""sourceTree""#))
+        #expect(!json.contains(#""installedTree""#))
+        #expect(!json.contains(tree))
+        #expect(json.contains(#""installedVersion" : "0.1.9""#))
         #expect(!json.contains("/Users/"))
         #expect(!json.contains(".git"))
     }

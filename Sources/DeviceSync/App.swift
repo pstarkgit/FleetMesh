@@ -98,8 +98,8 @@ struct DeviceSyncApp: App {
                     )
                     read = repository.load()
                 }
-                let repositoryTargets = read.manifest.map {
-                    RepositoryTargetResolver().resolve(
+                let productVersionTargets = read.manifest.map {
+                    ProductVersionTargetResolver().resolve(
                         manifest: $0,
                         localSnapshot: snapshot
                     )
@@ -107,7 +107,7 @@ struct DeviceSyncApp: App {
                 let assessment = DriftEngine().assess(
                     snapshot: snapshot,
                     manifest: read.manifest,
-                    repositoryTargets: repositoryTargets
+                    productVersionTargets: productVersionTargets
                 )
                 let allAssessments: [MachineAssessment] = read.machines.compactMap { machine -> MachineAssessment? in
                     guard read.manifest?.enrollmentStatus(for: machine.machineID) == .enrolled else {
@@ -116,7 +116,7 @@ struct DeviceSyncApp: App {
                     return DriftEngine().assess(
                         snapshot: machine,
                         manifest: read.manifest,
-                        repositoryTargets: repositoryTargets
+                        productVersionTargets: productVersionTargets
                     )
                 }
                 let reportedIDs = Set(read.machines.map(\.machineID))

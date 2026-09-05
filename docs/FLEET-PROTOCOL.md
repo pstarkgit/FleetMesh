@@ -68,10 +68,9 @@ Snapshots may contain:
 - human-readable redacted machine name and local hostname where safe
 - platform, capabilities, OS family/version/build, model identifier, and
   architecture
-- product version, build, installed revision, source revision, immutable
-  installed/source Git tree hashes, and configuration fingerprint
+- installed product version/build/revision, product-owned latest-version check,
+  and configuration fingerprint
 - theme filenames and aggregate SHA-256 fingerprint
-- source dirty/clean posture
 - observation status: installed, missing, or unknown
 - snapshot freshness and FleetMesh `deviceSyncVersion`
 
@@ -97,10 +96,9 @@ Allowed in shared JSON:
 - random machine IDs
 - redacted display names and safe local host labels
 - platform, capabilities, OS version/build, model identifier, architecture
-- managed component IDs, versions, revisions, immutable Git tree hashes,
-  status, and fingerprints
+- managed component IDs, installed versions/revisions, product update-check
+  results, status, and fingerprints
 - theme filenames plus aggregate SHA-256 fingerprints
-- whether a known source checkout has uncommitted work
 
 Forbidden in shared JSON:
 
@@ -110,6 +108,13 @@ Forbidden in shared JSON:
 - credentials, cookies, OAuth material, tokens, certificates, or Keychain data
 - raw settings, prompts, transcripts, logs, databases, sockets, or theme contents
 - live SQLite, WAL, shm, or ai-continuum database copies
+- developer source branch, source revision, worktree dirtiness, or Git tree hashes
+
+Software checkout evidence is Doctor-local only. Routine local and remote scans
+do not read software worktrees, and `machines/*.json` writers strip those legacy
+fields before publication. Configuration products may still publish their own
+bounded fingerprint/revision when that checkout or linked tree is the configured
+artifact itself.
 
 Missing or unreadable evidence is encoded as unknown/missing and surfaced. It is
 never converted to green health.

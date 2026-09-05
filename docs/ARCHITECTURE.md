@@ -37,6 +37,7 @@ flowchart TB
 | Desired fleet catalog, versions, enrollment, roles, and scope | `fleet-manifest.json` |
 | What a device actually has | Fresh read-only probes from that device |
 | Product installation and runtime state | The product's own installer/runtime |
+| Latest supported software version | Product-owned update feed/checker, else recorded minimum |
 | Linux SSH reachability from this controller Mac | Local Application Support state only |
 | Hidden Available-item preferences | Local Application Support state only |
 | Claude and OMP linked config | `~/harness-sync` |
@@ -127,8 +128,9 @@ Application Support/shared-fleet folders, LaunchAgent
 - A pending device does not affect health until enrolled.
 - A removed device remains visible without driving drift, Bootstrap work, or
   Doctor action.
-- Source checkout revision and installed artifact revision are separate. Local
-  source changes are surfaced but never copied, reset, pulled, or installed.
+- Software source checkouts are not part of fleet posture or shared snapshots.
+  Doctor may inspect a checkout only after an explicit source-repair request;
+  local changes are never copied, reset, pulled, or installed over.
 - Component retirement is explicit. MeshClaw evidence from older writers is
   ignored; Kiro Crew package/runtime/theme evidence is current.
 - Cloud-folder unavailability falls back only when no shared path is configured.
@@ -145,9 +147,11 @@ explicit confirmation, bounded execution, private local output capture, and
 mandatory postflight probes. It never turns shell snippets or other values from
 synced JSON into executable code.
 
-Before execution, Doctor publishes a fresh local snapshot and re-evaluates the
-exact component. It stops on remote targets, dirty source, unknown evidence, a
-source revision outside the baseline, missing entrypoints, and manual theme or
-identity decisions. After execution, it publishes another fresh snapshot. Exit
+Before execution, Doctor publishes a fresh installed-state snapshot and
+re-evaluates the exact component. For source-based recipes it separately checks
+the local checkout and stops on dirty, changed, or downgrade-prone source,
+remote targets, unknown evidence, missing entrypoints, and manual theme or
+identity decisions. Checkout details stay local and are not published. After
+execution, it publishes another fresh snapshot. Exit
 zero is not success by itself: the UI reports verified alignment, machine repair
 with a separate baseline decision, or remaining attention from observed state.

@@ -29,7 +29,6 @@ struct DoctorFinding: Identifiable, Hashable, Sendable {
 enum InlineRemediationAction: Equatable, Sendable {
     case repair
     case reviewCheckout
-    case updateCheckout
     case useObservedBaseline
     case none
 }
@@ -41,14 +40,9 @@ enum InlineRemediationPolicy {
         finding: DoctorFinding?
     ) -> InlineRemediationAction {
         if finding?.canRepair == true { return .repair }
-        if finding?.disposition == .protected,
-           observation?.sourceRevision != nil,
-           let installed = observation?.installedVersion,
-           let source = observation?.sourceVersion,
-           VersionIdentity.compare(source, installed) == .orderedAscending {
-            return .updateCheckout
-        }
-        if drift.state == .localChanges, observation?.sourceRevision != nil {
+        if drift.state == .localChanges,
+           drift.kind == .configuration || drift.kind == .theme,
+           observation?.sourceRevision != nil {
             return .reviewCheckout
         }
         if drift.state == .different,
@@ -72,7 +66,10 @@ enum DoctorApproval {
               approved.id == current.id,
               approved.status == current.status else { return false }
         if requiresCleanSource {
-            guard approved.sourceDirty == false, current.sourceDirty == false else { return false }
+            guard approved.sourceDirty == false,
+                  current.sourceDirty == false,
+                  approved.sourceRevision != nil,
+                  current.sourceRevision != nil else { return false }
         }
         guard optionalRevisionsMatch(approved.sourceRevision, current.sourceRevision),
               optionalVersionsMatch(approved.sourceVersion, current.sourceVersion),
@@ -253,7 +250,7 @@ struct DoctorPlanner: Sendable {
     func findings(
         for assessment: MachineAssessment,
         manifest: FleetManifest?,
-        repositoryTargets: [String: RepositoryBuildTarget] = [:]
+        productVersionTargets: [String: ProductVersionTarget] = [:]
     ) -> [DoctorFinding] {
         assessment.drifts.compactMap { drift in
             guard drift.state != .aligned
@@ -265,7 +262,7 @@ struct DoctorPlanner: Sendable {
                 resolvedTarget: manifest?.target(drift.componentID).map {
                     ResolvedFleetTarget(
                         baseline: $0,
-                        repositoryBuild: repositoryTargets[drift.componentID]
+                        productVersion: productVersionTargets[drift.componentID]
                     )
                 }
             )
@@ -275,25 +272,29 @@ struct DoctorPlanner: Sendable {
     func finding(
         for drift: ComponentDrift,
         observation: ComponentObservation?,
-        target: ManifestTarget?
+        target: ManifestTarget?,
+        enforceSourcePreflight: Bool = false
     ) -> DoctorFinding {
         finding(
             for: drift,
             observation: observation,
             resolvedTarget: target.map {
-                ResolvedFleetTarget(baseline: $0, repositoryBuild: nil)
-            }
+                ResolvedFleetTarget(baseline: $0, productVersion: nil)
+            },
+            enforceSourcePreflight: enforceSourcePreflight
         )
     }
 
     func finding(
         for drift: ComponentDrift,
         observation: ComponentObservation?,
-        resolvedTarget target: ResolvedFleetTarget?
+        resolvedTarget target: ResolvedFleetTarget?,
+        enforceSourcePreflight: Bool = false
     ) -> DoctorFinding {
         let definition = DoctorCatalog.definition(for: drift.componentID)
 
-        if drift.state == .localChanges || observation?.sourceDirty == true {
+        if observation?.sourceDirty == true,
+           enforceSourcePreflight || drift.kind == .configuration || drift.kind == .theme {
             return DoctorFinding(
                 drift: drift,
                 disposition: .protected,
@@ -313,7 +314,8 @@ struct DoctorPlanner: Sendable {
             )
         }
 
-        if let installed = observation?.installedVersion,
+        if enforceSourcePreflight,
+           let installed = observation?.installedVersion,
            let source = observation?.sourceVersion,
            VersionIdentity.compare(source, installed) == .orderedAscending {
             return DoctorFinding(
@@ -321,20 +323,6 @@ struct DoctorPlanner: Sendable {
                 disposition: .protected,
                 title: "Update the \(drift.name) checkout before repair",
                 detail: "The installed app (\(installed)) is newer than this clean checkout (\(source)). FleetMesh will not run an installer that could downgrade it.",
-                recipe: nil
-            )
-        }
-
-        if let expected = target?.expectedSourceRevision,
-           let observed = observation?.sourceRevision,
-           !RevisionIdentity.matches(expected, observed) {
-            return DoctorFinding(
-                drift: drift,
-                disposition: .manual,
-                title: "Choose the approved \(drift.name) source revision",
-                detail: target?.basis == .latestRepository
-                    ? "Doctor will not pull or switch branches automatically. Update this checkout to the latest verified repository target, then review the product-owned installer."
-                    : "Doctor will not pull, switch branches, or install from a checkout that differs from the saved fleet baseline.",
                 recipe: nil
             )
         }
@@ -347,6 +335,32 @@ struct DoctorPlanner: Sendable {
                 detail: definition?.detail ?? "This item needs an explicit operator decision before it can be changed.",
                 recipe: nil
             )
+        }
+
+        if enforceSourcePreflight, recipe.requiresCleanSource {
+            guard observation?.sourceDirty == false,
+                  observation?.sourceRevision != nil else {
+                return DoctorFinding(
+                    drift: drift,
+                    disposition: .protected,
+                    title: "Verify the \(drift.name) checkout before repair",
+                    detail: "Doctor could not prove a clean local checkout for this source-based installer. No repair command ran.",
+                    recipe: nil
+                )
+            }
+            if let expected = target?.expectedVersion {
+                guard let source = observation?.sourceVersion,
+                      let comparison = VersionIdentity.compare(source, expected),
+                      comparison != .orderedAscending else {
+                    return DoctorFinding(
+                        drift: drift,
+                        disposition: .protected,
+                        title: "Update the \(drift.name) checkout before repair",
+                        detail: "The local checkout does not contain the selected version target (\(expected)). FleetMesh will not run an installer that is known to remain behind.",
+                        recipe: nil
+                    )
+                }
+            }
         }
 
         return DoctorFinding(
@@ -384,22 +398,14 @@ extension DoctorPlanner {
         before: ComponentObservation?,
         after: ComponentObservation?
     ) -> Bool {
-        guard let after, after.status == .installed, after.sourceDirty != true else {
+        guard let after, after.status == .installed else { return false }
+        if before?.status == .missing { return true }
+        guard let beforeVersion = before?.installedVersion,
+              let afterVersion = after.installedVersion,
+              let comparison = VersionIdentity.compare(afterVersion, beforeVersion) else {
             return false
         }
-
-        if before?.status == .missing {
-            return true
-        }
-
-        guard let beforeInstalled = before?.installedRevision,
-              let beforeSource = before?.sourceRevision,
-              !RevisionIdentity.matches(beforeInstalled, beforeSource),
-              let afterInstalled = after.installedRevision,
-              let afterSource = after.sourceRevision else {
-            return false
-        }
-        return RevisionIdentity.matches(afterInstalled, afterSource)
+        return comparison == .orderedDescending
     }
 }
 
