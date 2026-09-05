@@ -37,7 +37,8 @@ or replacing a theme always requires an explicit user action.
 
 - Shared state is small, atomic, human-readable JSON only.
 - `fleet-manifest.json` is desired state and changes only through an explicit
-  baseline action (except first-run seeding when no manifest exists).
+  baseline or policy action. Never seed it from an ordinary first-run scan; a
+  missing manifest may be a partially synced existing fleet.
 - `machines/<random-local-id>.json` is one writer per machine and contains no
   serial number, hardware UUID, username, home path, secrets, or raw config.
 - Missing or unreadable evidence is `unknown`/`missing`, never healthy.

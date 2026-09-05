@@ -91,14 +91,17 @@ struct LocalDeviceState: Codable, Hashable, Sendable {
 struct LocalStateRepository: Sendable {
     let stateURL: URL
     let homeURL: URL
+    private let beforeSave: (@Sendable (LocalDeviceState) throws -> Void)?
 
     private var fileManager: FileManager { .default }
 
     init(
         stateURL: URL? = nil,
-        homeURL: URL = FileManager.default.homeDirectoryForCurrentUser
+        homeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+        beforeSave: (@Sendable (LocalDeviceState) throws -> Void)? = nil
     ) {
         self.homeURL = homeURL
+        self.beforeSave = beforeSave
         if let stateURL {
             self.stateURL = stateURL
         } else {
@@ -131,11 +134,6 @@ struct LocalStateRepository: Sendable {
             )
     }
 
-    static func maySeedInitialManifest(state: LocalDeviceState, homeURL: URL) -> Bool {
-        URL(fileURLWithPath: state.fleetRootPath, isDirectory: true).standardizedFileURL
-            == canonicalSharedFleetURL(homeURL: homeURL).standardizedFileURL
-    }
-
     func loadOrCreate() throws -> LocalDeviceState {
         if fileManager.fileExists(atPath: stateURL.path) {
             let data = try Data(contentsOf: stateURL)
@@ -152,6 +150,7 @@ struct LocalStateRepository: Sendable {
     }
 
     func save(_ state: LocalDeviceState) throws {
+        try beforeSave?(state)
         try fileManager.createDirectory(
             at: stateURL.deletingLastPathComponent(),
             withIntermediateDirectories: true,

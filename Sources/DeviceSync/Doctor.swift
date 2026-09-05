@@ -26,6 +26,44 @@ struct DoctorFinding: Identifiable, Hashable, Sendable {
     var canRepair: Bool { disposition == .repairable && recipe != nil }
 }
 
+enum DoctorApproval {
+    static func matchesPinnedSource(
+        approved: ComponentObservation?,
+        current: ComponentObservation?,
+        requiresCleanSource: Bool
+    ) -> Bool {
+        guard let approved, let current,
+              approved.id == current.id,
+              approved.status == current.status else { return false }
+        if requiresCleanSource {
+            guard approved.sourceDirty == false, current.sourceDirty == false else { return false }
+        }
+        guard optionalRevisionsMatch(approved.sourceRevision, current.sourceRevision),
+              optionalVersionsMatch(approved.sourceVersion, current.sourceVersion),
+              optionalRevisionsMatch(approved.installedRevision, current.installedRevision),
+              optionalVersionsMatch(approved.installedVersion, current.installedVersion) else {
+            return false
+        }
+        return true
+    }
+
+    private static func optionalRevisionsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): true
+        case let (lhs?, rhs?): RevisionIdentity.matches(lhs, rhs)
+        default: false
+        }
+    }
+
+    private static func optionalVersionsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): true
+        case let (lhs?, rhs?): VersionIdentity.matches(lhs, rhs)
+        default: false
+        }
+    }
+}
+
 struct DoctorRecipe: Hashable, Sendable {
     let componentID: String
     let homeRelativeExecutable: String
@@ -178,7 +216,8 @@ enum DoctorCatalog {
 struct DoctorPlanner: Sendable {
     func findings(
         for assessment: MachineAssessment,
-        manifest: FleetManifest?
+        manifest: FleetManifest?,
+        repositoryTargets: [String: RepositoryBuildTarget] = [:]
     ) -> [DoctorFinding] {
         assessment.drifts.compactMap { drift in
             guard drift.state != .aligned
@@ -187,7 +226,12 @@ struct DoctorPlanner: Sendable {
             return finding(
                 for: drift,
                 observation: assessment.snapshot.component(drift.componentID),
-                target: manifest?.target(drift.componentID)
+                resolvedTarget: manifest?.target(drift.componentID).map {
+                    ResolvedFleetTarget(
+                        baseline: $0,
+                        repositoryBuild: repositoryTargets[drift.componentID]
+                    )
+                }
             )
         }
     }
@@ -196,6 +240,20 @@ struct DoctorPlanner: Sendable {
         for drift: ComponentDrift,
         observation: ComponentObservation?,
         target: ManifestTarget?
+    ) -> DoctorFinding {
+        finding(
+            for: drift,
+            observation: observation,
+            resolvedTarget: target.map {
+                ResolvedFleetTarget(baseline: $0, repositoryBuild: nil)
+            }
+        )
+    }
+
+    func finding(
+        for drift: ComponentDrift,
+        observation: ComponentObservation?,
+        resolvedTarget target: ResolvedFleetTarget?
     ) -> DoctorFinding {
         let definition = DoctorCatalog.definition(for: drift.componentID)
 
@@ -221,12 +279,14 @@ struct DoctorPlanner: Sendable {
 
         if let expected = target?.expectedSourceRevision,
            let observed = observation?.sourceRevision,
-           !doctorRevisionsMatch(expected, observed) {
+           !RevisionIdentity.matches(expected, observed) {
             return DoctorFinding(
                 drift: drift,
                 disposition: .manual,
                 title: "Choose the approved \(drift.name) source revision",
-                detail: "Doctor will not pull, switch branches, or install from a checkout that differs from the fleet baseline.",
+                detail: target?.basis == .latestRepository
+                    ? "Doctor will not pull or switch branches automatically. Update this checkout to the latest verified repository target, then review the product-owned installer."
+                    : "Doctor will not pull, switch branches, or install from a checkout that differs from the saved fleet baseline.",
                 recipe: nil
             )
         }
@@ -286,17 +346,13 @@ extension DoctorPlanner {
 
         guard let beforeInstalled = before?.installedRevision,
               let beforeSource = before?.sourceRevision,
-              !doctorRevisionsMatch(beforeInstalled, beforeSource),
+              !RevisionIdentity.matches(beforeInstalled, beforeSource),
               let afterInstalled = after.installedRevision,
               let afterSource = after.sourceRevision else {
             return false
         }
-        return doctorRevisionsMatch(afterInstalled, afterSource)
+        return RevisionIdentity.matches(afterInstalled, afterSource)
     }
-}
-
-private func doctorRevisionsMatch(_ lhs: String, _ rhs: String) -> Bool {
-    lhs == rhs || lhs.hasPrefix(rhs) || rhs.hasPrefix(lhs)
 }
 
 struct DoctorRunRecord: Identifiable, Hashable, Sendable {

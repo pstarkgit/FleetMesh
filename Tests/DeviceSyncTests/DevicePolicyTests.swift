@@ -180,7 +180,86 @@ struct DevicePolicyModelTests {
 struct DevicePolicyStoreTests {
     @Test
     @MainActor
-    func startupMigratesLegacyManifestWithoutAutoEnrollingExtraReports() async throws {
+    func newMacJoinsExistingFleetExplicitlyWithoutReplacingTargets() async throws {
+        let root = policyTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let fleet = root.appendingPathComponent("fleet", isDirectory: true)
+        let authority = policyMacSnapshot(
+            machineID: "b41f9f4f-0fce-4792-a3c6-c93a73fcb4cd",
+            name: "Authority Mac"
+        )
+        let joining = policyMacSnapshot(
+            machineID: "9c694b70-14b7-48f6-83e1-cd23603ac157",
+            name: "New Mac"
+        )
+        let original = FleetManifest(snapshot: authority)
+        let repository = FleetRepository(rootURL: fleet)
+        try repository.saveManifest(original)
+        let localRepository = LocalStateRepository(
+            stateURL: root.appendingPathComponent("state/local-state.json"),
+            homeURL: home
+        )
+        try localRepository.save(LocalDeviceState(
+            machineID: joining.machineID,
+            fleetRootPath: fleet.path,
+            displayName: joining.name
+        ))
+        let store = FleetStore(
+            localRepository: localRepository,
+            inventory: PolicyLocalInventory(snapshot: joining),
+            doctorHomeURL: home
+        )
+
+        await store.start()
+        #expect(store.localDeviceNeedsEnrollment)
+        #expect(store.localDevice?.status == .pending)
+
+        await store.joinThisMac()
+
+        let joined = try #require(repository.load().manifest)
+        #expect(joined.enrollmentStatus(for: joining.machineID) == .enrolled)
+        #expect(joined.devicePolicy(joining.machineID)?.role == .workstation)
+        #expect(joined.target("authbar") == original.target("authbar"))
+        #expect(store.localDevice?.status == .enrolled)
+        #expect(store.lastActionMessage?.contains("now in the fleet") == true)
+    }
+
+    @Test
+    @MainActor
+    func canonicalOneDriveFolderWithoutManifestNeverSeedsOrPublishes() async throws {
+        let root = policyTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let fleet = LocalStateRepository.canonicalSharedFleetURL(homeURL: home)
+        try FileManager.default.createDirectory(at: fleet, withIntermediateDirectories: true)
+        let local = policyMacSnapshot(machineID: DeviceStoreFixture.localMachineID)
+        let localRepository = LocalStateRepository(
+            stateURL: root.appendingPathComponent("state/local-state.json"),
+            homeURL: home
+        )
+        try localRepository.save(LocalDeviceState(
+            machineID: local.machineID,
+            fleetRootPath: fleet.path
+        ))
+        let store = FleetStore(
+            localRepository: localRepository,
+            inventory: PolicyLocalInventory(snapshot: local),
+            doctorHomeURL: home
+        )
+
+        await store.start()
+
+        let repository = FleetRepository(rootURL: fleet)
+        #expect(store.needsFleetConnection)
+        #expect(store.localDevice?.status == .pending)
+        #expect(!repository.manifestExists)
+        #expect(!FileManager.default.fileExists(atPath: repository.machinesURL.path))
+    }
+
+    @Test
+    @MainActor
+    func startupReadsLegacyManifestWithoutRewritingFleetAuthority() async throws {
         let extra = policyLinuxSnapshot(
             machineID: "9c694b70-14b7-48f6-83e1-cd23603ac157",
             name: "Unreviewed Linux report"
@@ -190,17 +269,21 @@ struct DevicePolicyStoreTests {
             legacyManifest: true
         )
         defer { fixture.cleanUp() }
+        let manifestURL = FleetRepository(rootURL: fixture.fleetURL).manifestURL
+        let before = try Data(contentsOf: manifestURL)
 
         await fixture.store.start()
 
+        let after = try Data(contentsOf: manifestURL)
         let persisted = try #require(
             FleetRepository(rootURL: fixture.fleetURL).load().manifest
         )
-        #expect(persisted.schemaVersion == FleetManifest.currentSchemaVersion)
+        #expect(after == before)
+        #expect(persisted.schemaVersion == 1)
+        #expect(persisted.devices == nil)
         #expect(persisted.enrollmentStatus(for: fixture.localSnapshot.machineID) == .enrolled)
         #expect(persisted.enrollmentStatus(for: extra.machineID) == .pending)
-        #expect(persisted.devices?.map(\.machineID) == [fixture.localSnapshot.machineID])
-        #expect(persisted.target("codex-voice")?.isManagedByDefault == false)
+        #expect(persisted.target("codex-voice")?.isManagedByDefault == true)
         #expect(fixture.store.enrolledDevices.map(\.machineID) == [fixture.localSnapshot.machineID])
         #expect(fixture.store.devices.first { $0.machineID == extra.machineID }?.status == .pending)
         #expect(!fixture.store.assessments.contains {
@@ -354,6 +437,71 @@ struct DevicePolicyStoreTests {
 
     @Test
     @MainActor
+    func failedLocalRoleWriteLeavesSharedDevicePolicyUnchanged() async throws {
+        let connection = try RemoteDeviceConnection(
+            host: "role-write-failure",
+            displayName: "Role write failure",
+            role: .cloudDesktop
+        )
+        let fixture = try DeviceStoreFixture(
+            remoteConnections: [connection],
+            beforeLocalStateSave: { _ in throw PolicyLocalStateError.injectedFailure }
+        )
+        defer { fixture.cleanUp() }
+        await fixture.store.start()
+        let repository = FleetRepository(rootURL: fixture.fleetURL)
+        let manifestBefore = try Data(contentsOf: repository.manifestURL)
+
+        await fixture.store.setDeviceEnrollment(
+            machineID: connection.machineID,
+            enrolled: true,
+            role: .server
+        )
+
+        #expect(fixture.store.lastError?.contains("test local state failure") == true)
+        #expect(try Data(contentsOf: repository.manifestURL) == manifestBefore)
+        #expect(repository.load().manifest?.devicePolicy(connection.machineID) == nil)
+        #expect(fixture.store.localState?.remoteConnections.first?.role == .cloudDesktop)
+    }
+
+    @Test
+    @MainActor
+    func staleSharedPolicyWriteRollsBackControllerRole() async throws {
+        let connection = try RemoteDeviceConnection(
+            host: "role-rollback",
+            displayName: "Role rollback",
+            role: .cloudDesktop
+        )
+        let fixture = try DeviceStoreFixture(remoteConnections: [connection])
+        defer { fixture.cleanUp() }
+        await fixture.store.start()
+
+        let repository = FleetRepository(rootURL: fixture.fleetURL)
+        let displayed = try #require(fixture.store.manifest)
+        let newer = try displayed.settingManaged(
+            componentID: "authbar",
+            managed: false,
+            observation: fixture.localSnapshot.component("authbar"),
+            updatedByMachineID: fixture.localSnapshot.machineID
+        )
+        try repository.saveManifest(newer, replacingRevision: displayed.revision)
+
+        await fixture.store.setDeviceEnrollment(
+            machineID: connection.machineID,
+            enrolled: true,
+            role: .server
+        )
+
+        let persistedLocal = try fixture.localRepository.loadOrCreate()
+        #expect(fixture.store.lastError?.contains("Another Mac changed") == true)
+        #expect(repository.load().manifest?.revision == newer.revision)
+        #expect(repository.load().manifest?.devicePolicy(connection.machineID) == nil)
+        #expect(persistedLocal.remoteConnections.first?.role == .cloudDesktop)
+        #expect(fixture.store.localState?.remoteConnections.first?.role == .cloudDesktop)
+    }
+
+    @Test
+    @MainActor
     func missingManifestBlocksRemoteOnboardingAndDoesNotStoreEndpoint() async throws {
         let fixture = try DeviceStoreFixture(includeManifest: false)
         defer { fixture.cleanUp() }
@@ -372,6 +520,9 @@ struct DevicePolicyStoreTests {
         #expect(fixture.store.lastError?.contains("valid fleet baseline") == true)
         #expect(fixture.store.localState?.remoteConnections.isEmpty == true)
         #expect(!fixture.store.devices.contains { $0.name == "Blocked cloud desktop" })
+        #expect(!FileManager.default.fileExists(
+            atPath: FleetRepository(rootURL: fixture.fleetURL).manifestURL.path
+        ))
     }
 
     @Test
@@ -425,6 +576,7 @@ private struct DeviceStoreFixture {
     let localSnapshot: MachineSnapshot
     let doctorRunner: PolicyRecordingDoctorRunner
     let store: FleetStore
+    let localRepository: LocalStateRepository
 
     @MainActor
     init(
@@ -432,20 +584,29 @@ private struct DeviceStoreFixture {
         includeManifest: Bool = true,
         pendingSnapshots: [MachineSnapshot] = [],
         legacyManifest: Bool = false,
-        remoteInventory: any RemoteInventoryCapturing = PolicyRemoteInventory()
+        remoteInventory: any RemoteInventoryCapturing = PolicyRemoteInventory(),
+        remoteConnections: [RemoteDeviceConnection] = [],
+        beforeLocalStateSave: (@Sendable (LocalDeviceState) throws -> Void)? = nil
     ) throws {
         rootURL = policyTemporaryDirectory()
         fleetURL = rootURL.appendingPathComponent("fleet", isDirectory: true)
         let homeURL = rootURL.appendingPathComponent("home", isDirectory: true)
-        let localRepository = LocalStateRepository(
-            stateURL: rootURL.appendingPathComponent("state/local-state.json"),
+        let stateURL = rootURL.appendingPathComponent("state/local-state.json")
+        let setupLocalRepository = LocalStateRepository(
+            stateURL: stateURL,
             homeURL: homeURL
         )
-        try localRepository.save(LocalDeviceState(
+        try setupLocalRepository.save(LocalDeviceState(
             machineID: Self.localMachineID,
             fleetRootPath: fleetURL.path,
-            displayName: "Policy Mac"
+            displayName: "Policy Mac",
+            remoteDevices: remoteConnections.isEmpty ? nil : remoteConnections
         ))
+        localRepository = LocalStateRepository(
+            stateURL: stateURL,
+            homeURL: homeURL,
+            beforeSave: beforeLocalStateSave
+        )
 
         localSnapshot = policyMacSnapshot(machineID: Self.localMachineID)
         var manifest = FleetManifest(snapshot: localSnapshot)
@@ -487,6 +648,12 @@ private struct DeviceStoreFixture {
         }
         for pendingSnapshot in pendingSnapshots {
             _ = try fleetRepository.publish(pendingSnapshot)
+        }
+        for connection in remoteConnections {
+            _ = try fleetRepository.publish(policyLinuxSnapshot(
+                machineID: connection.machineID,
+                name: connection.displayName
+            ))
         }
 
         doctorRunner = PolicyRecordingDoctorRunner()
@@ -535,6 +702,12 @@ private enum PolicyRemoteInventoryError: LocalizedError {
     case testFailure
 
     var errorDescription: String? { "test SSH failure" }
+}
+
+private enum PolicyLocalStateError: LocalizedError {
+    case injectedFailure
+
+    var errorDescription: String? { "test local state failure" }
 }
 
 private actor PolicyRecordingDoctorRunner: DoctorCommandRunning {

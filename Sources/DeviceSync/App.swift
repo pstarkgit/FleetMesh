@@ -48,6 +48,10 @@ struct DeviceSyncApp: App {
         Task.detached {
             defer { semaphore.signal() }
             do {
+                if operation == .selfCheck {
+                    print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current): SELF-CHECK OK")
+                    return
+                }
                 let localRepository = LocalStateRepository()
                 let state = try localRepository.loadOrCreate()
                 let snapshot = await InventoryService().capture(
@@ -57,17 +61,27 @@ struct DeviceSyncApp: App {
                 let repository = FleetRepository(
                     rootURL: URL(fileURLWithPath: state.fleetRootPath, isDirectory: true)
                 )
-                let url = try repository.publish(snapshot)
-                if operation == .adoptBaseline
-                    || (operation == .check
-                        && !repository.manifestExists
-                        && LocalStateRepository.maySeedInitialManifest(
-                            state: state,
-                            homeURL: localRepository.homeURL
-                        )) {
+                let existing = repository.load()
+                let url: URL?
+                switch operation {
+                case .adoptBaseline:
+                    url = try repository.publish(snapshot)
                     try repository.saveManifest(FleetManifest(snapshot: snapshot))
+                case .check:
+                    if existing.manifest == nil {
+                        url = nil
+                    } else {
+                        url = try repository.publish(snapshot)
+                    }
+                case .snapshot, .setManaged:
+                    guard existing.manifest != nil else {
+                        throw HeadlessOperationError.missingManifest
+                    }
+                    url = try repository.publish(snapshot)
+                case .selfCheck:
+                    fatalError("self-check returns before inventory")
                 }
-                var read = repository.load()
+                var read = url == nil ? existing : repository.load()
                 if case .setManaged(let componentID, let managed) = operation {
                     guard let manifest = read.manifest else {
                         throw HeadlessOperationError.missingManifest
@@ -84,10 +98,40 @@ struct DeviceSyncApp: App {
                     )
                     read = repository.load()
                 }
-                let assessment = DriftEngine().assess(snapshot: snapshot, manifest: read.manifest)
+                let repositoryTargets = read.manifest.map {
+                    RepositoryTargetResolver().resolve(
+                        manifest: $0,
+                        localSnapshot: snapshot
+                    )
+                } ?? [:]
+                let assessment = DriftEngine().assess(
+                    snapshot: snapshot,
+                    manifest: read.manifest,
+                    repositoryTargets: repositoryTargets
+                )
+                let allAssessments: [MachineAssessment] = read.machines.compactMap { machine -> MachineAssessment? in
+                    guard read.manifest?.enrollmentStatus(for: machine.machineID) == .enrolled else {
+                        return nil
+                    }
+                    return DriftEngine().assess(
+                        snapshot: machine,
+                        manifest: read.manifest,
+                        repositoryTargets: repositoryTargets
+                    )
+                }
+                let reportedIDs = Set(read.machines.map(\.machineID))
+                let missingEnrolled = read.manifest?.devices?.filter {
+                    $0.enrollment == .enrolled && !reportedIDs.contains($0.machineID)
+                }.count ?? 0
+                let fleetVerdict = FleetHealthEvaluator.verdict(
+                    manifest: read.manifest,
+                    assessments: allAssessments,
+                    issueCount: read.issues.count,
+                    missingEnrolledCount: missingEnrolled
+                )
                 switch operation {
                 case .snapshot:
-                    print("snapshot: \(url.path)")
+                    print("snapshot: \(url?.path ?? "not published")")
                 case .adoptBaseline:
                     print("baseline: \(repository.manifestURL.path)")
                     print("targets: \(read.manifest?.activeTargets.count ?? 0)")
@@ -95,13 +139,18 @@ struct DeviceSyncApp: App {
                     print("scope: \(componentID) \(managed ? "managed" : "unmanaged")")
                     print("baseline: \(repository.manifestURL.path)")
                     print("targets: \(read.manifest?.activeTargets.count ?? 0)")
-                    print("snapshot: \(url.path)")
+                    print("snapshot: \(url?.path ?? "not published")")
                 case .check:
-                    print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current): OK")
+                    print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current): \(fleetVerdict.label)")
                     print("machine: \(snapshot.name) (\(snapshot.hostName))")
                     print("fleet folder: \(repository.rootURL.path)")
                     print("components: \(snapshot.components.filter { $0.status == .installed }.count) installed, \(snapshot.components.filter { $0.status == .missing }.count) missing")
                     print("fleet: \(read.machines.count) report(s), \(assessment.attentionCount) attention item(s), \(read.issues.count) read issue(s)")
+                    if fleetVerdict.headlessExitCode != 0 {
+                        exit(fleetVerdict.headlessExitCode)
+                    }
+                case .selfCheck:
+                    break
                 }
             } catch {
                 fputs("\(FleetMeshIdentity.productName) check failed: \(error.localizedDescription)\n", stderr)
@@ -114,13 +163,16 @@ struct DeviceSyncApp: App {
 }
 
 enum HeadlessOperation: Equatable {
+    case selfCheck
     case check
     case snapshot
     case adoptBaseline
     case setManaged(componentID: String, managed: Bool)
 
     init?(arguments: [String]) {
-        if arguments.contains("--check") {
+        if arguments.contains("--self-check") {
+            self = .selfCheck
+        } else if arguments.contains("--check") {
             self = .check
         } else if arguments.contains("--snapshot") {
             self = .snapshot
@@ -142,7 +194,7 @@ private enum HeadlessOperationError: LocalizedError {
     case missingManifest
 
     var errorDescription: String? {
-        "No fleet baseline is available. Connect the shared fleet folder before changing scope."
+        "No readable fleet baseline is available. Connect the existing shared fleet folder, or use --adopt-baseline explicitly to create a new fleet."
     }
 }
 

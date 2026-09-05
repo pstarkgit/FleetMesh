@@ -21,8 +21,15 @@ struct FleetReadResult: Sendable {
     let issues: [FleetIssue]
 }
 
+struct FleetManifestReadResult: Sendable {
+    let manifest: FleetManifest?
+    let issue: FleetIssue?
+}
+
 struct FleetRepository: Sendable {
     let rootURL: URL
+
+    private static let processManifestLock = NSLock()
 
     private var fileManager: FileManager { .default }
 
@@ -36,6 +43,10 @@ struct FleetRepository: Sendable {
 
     var machinesURL: URL {
         rootURL.appendingPathComponent("machines", isDirectory: true)
+    }
+
+    var manifestRevisionsURL: URL {
+        rootURL.appendingPathComponent("manifest-revisions", isDirectory: true)
     }
 
     var manifestExists: Bool {
@@ -55,7 +66,10 @@ struct FleetRepository: Sendable {
     }
 
     func saveManifest(_ manifest: FleetManifest) throws {
+        Self.processManifestLock.lock()
+        defer { Self.processManifestLock.unlock() }
         try ensureDirectories()
+        try writeRevisionRecordIfNeeded(manifest, parentRevision: nil)
         try write(manifest, to: manifestURL)
     }
 
@@ -63,6 +77,8 @@ struct FleetRepository: Sendable {
         _ manifest: FleetManifest,
         replacingRevision expectedRevision: String
     ) throws {
+        Self.processManifestLock.lock()
+        defer { Self.processManifestLock.unlock() }
         guard fileManager.fileExists(atPath: manifestURL.path) else {
             throw FleetRepositoryError.missingManifest
         }
@@ -73,30 +89,14 @@ struct FleetRepository: Sendable {
         guard current.revision == expectedRevision else {
             throw FleetRepositoryError.manifestChanged
         }
-        try saveManifest(manifest)
+        try writeRevisionRecordIfNeeded(manifest, parentRevision: expectedRevision)
+        try write(manifest, to: manifestURL)
     }
 
     func load() -> FleetReadResult {
-        var issues: [FleetIssue] = []
-        let manifest: FleetManifest?
-
-        if fileManager.fileExists(atPath: manifestURL.path) {
-            do {
-                let decoded = try decode(FleetManifest.self, from: manifestURL)
-                guard decoded.schemaVersion <= FleetManifest.currentSchemaVersion else {
-                    throw FleetRepositoryError.futureSchema(decoded.schemaVersion)
-                }
-                manifest = decoded
-            } catch {
-                manifest = nil
-                issues.append(FleetIssue(
-                    title: "Baseline could not be read",
-                    detail: error.localizedDescription
-                ))
-            }
-        } else {
-            manifest = nil
-        }
+        let manifestRead = loadManifest()
+        var issues = manifestRead.issue.map { [$0] } ?? []
+        let manifest = manifestRead.manifest
 
         var machineReportsByID: [String: LoadedMachineReport] = [:]
         var duplicateReportCountsByID: [String: Int] = [:]
@@ -163,17 +163,123 @@ struct FleetRepository: Sendable {
         )
     }
 
+    func loadManifest() -> FleetManifestReadResult {
+        guard fileManager.fileExists(atPath: manifestURL.path) else {
+            return FleetManifestReadResult(manifest: nil, issue: nil)
+        }
+        do {
+            let decoded = try decode(FleetManifest.self, from: manifestURL)
+            guard decoded.schemaVersion <= FleetManifest.currentSchemaVersion else {
+                throw FleetRepositoryError.futureSchema(decoded.schemaVersion)
+            }
+            if let conflict = try manifestConflictIssue(for: decoded) {
+                return FleetManifestReadResult(manifest: nil, issue: conflict)
+            }
+            return FleetManifestReadResult(manifest: decoded, issue: nil)
+        } catch {
+            return FleetManifestReadResult(
+                manifest: nil,
+                issue: FleetIssue(
+                    title: "Baseline could not be read",
+                    detail: error.localizedDescription
+                )
+            )
+        }
+    }
+
     private func ensureDirectories() throws {
         try fileManager.createDirectory(
             at: machinesURL,
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+        try fileManager.createDirectory(
+            at: manifestRevisionsURL,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+    }
+
+    private func writeRevisionRecordIfNeeded(
+        _ manifest: FleetManifest,
+        parentRevision: String?
+    ) throws {
+        let record = FleetManifestRevisionRecord(
+            parentRevision: parentRevision,
+            manifest: manifest
+        )
+        let url = manifestRevisionsURL
+            .appendingPathComponent(manifest.revision.lowercased())
+            .appendingPathExtension("json")
+        do {
+            try writeNew(record, to: url)
+        } catch CocoaError.fileWriteFileExists {
+            let existing = try decode(FleetManifestRevisionRecord.self, from: url)
+            guard existing == record else {
+                throw FleetRepositoryError.manifestRevisionCollision(manifest.revision)
+            }
+        }
+    }
+
+    private func manifestConflictIssue(for manifest: FleetManifest) throws -> FleetIssue? {
+        guard fileManager.fileExists(atPath: manifestRevisionsURL.path) else { return nil }
+        let urls = try fileManager.contentsOfDirectory(
+            at: manifestRevisionsURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ).filter { $0.pathExtension.lowercased() == "json" }
+        var childrenByParent: [String: Set<String>] = [:]
+        var recordsByRevision: [String: FleetManifestRevisionRecord] = [:]
+        for url in urls {
+            let record = try decode(FleetManifestRevisionRecord.self, from: url)
+            if let existing = recordsByRevision[record.manifest.revision], existing != record {
+                throw FleetRepositoryError.manifestRevisionCollision(record.manifest.revision)
+            }
+            recordsByRevision[record.manifest.revision] = record
+            guard let parent = record.parentRevision else { continue }
+            childrenByParent[parent, default: []].insert(record.manifest.revision)
+        }
+        if !childrenByParent[manifest.revision, default: []].isEmpty {
+            return FleetIssue(
+                id: "manifest-revision-pending",
+                title: "Fleet policy is waiting for cloud convergence",
+                detail: "A newer immutable fleet policy revision is present, but fleet-manifest.json still points to its parent. FleetMesh stopped using desired state until cloud sync converges or you explicitly replace the baseline."
+            )
+        }
+        // A parentless record is an explicit baseline replacement and starts a
+        // new authority lineage. Historical conflicts remain preserved on disk
+        // but do not poison the consciously chosen replacement.
+        guard let currentRecord = recordsByRevision[manifest.revision],
+              currentRecord.parentRevision != nil else { return nil }
+        var cursor = manifest.revision
+        var visited: Set<String> = []
+        while visited.insert(cursor).inserted,
+              let record = recordsByRevision[cursor],
+              let parent = record.parentRevision {
+            if childrenByParent[parent, default: []].count > 1 {
+                return FleetIssue(
+                    id: "manifest-revision-conflict",
+                    title: "Fleet policy has conflicting revisions",
+                    detail: "Two Macs changed the same fleet policy revision before cloud sync converged. FleetMesh stopped using desired state so neither branch is silently lost. Each complete candidate policy is preserved in manifest-revisions. Review them and explicitly replace the baseline with the intended policy before continuing. Current manifest revision: \(manifest.revision)."
+                )
+            }
+            cursor = parent
+        }
+        return nil
     }
 
     private func write<T: Encodable>(_ value: T, to url: URL) throws {
         let data = try FleetJSON.encoder.encode(value)
         try data.write(to: url, options: .atomic)
+        try? fileManager.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
+    }
+
+    private func writeNew<T: Encodable>(_ value: T, to url: URL) throws {
+        let data = try FleetJSON.encoder.encode(value)
+        try data.write(to: url, options: [.withoutOverwriting])
         try? fileManager.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: url.path
@@ -206,6 +312,123 @@ struct FleetRepository: Sendable {
     }
 }
 
+/// Serializes cloud-backed fleet-folder I/O away from the main actor. Callers
+/// compute policy changes in memory, then submit one bounded repository
+/// transaction and apply the returned read model on the UI actor.
+actor FleetRepositoryAccess {
+    func load(rootURL: URL) -> FleetReadResult {
+        FleetRepository(rootURL: rootURL).load()
+    }
+
+    func loadManifest(rootURL: URL) -> FleetManifestReadResult {
+        FleetRepository(rootURL: rootURL).loadManifest()
+    }
+
+    func replaceBaseline(
+        _ manifest: FleetManifest,
+        snapshot: MachineSnapshot,
+        rootURL: URL
+    ) throws -> FleetReadResult {
+        let repository = FleetRepository(rootURL: rootURL)
+        _ = try repository.publish(snapshot)
+        // Desired-state authority is the commit point. If evidence publication
+        // fails, the existing baseline remains byte-for-byte unchanged.
+        try repository.saveManifest(manifest)
+        return repository.load()
+    }
+
+    func publish(
+        _ snapshot: MachineSnapshot,
+        rootURL: URL
+    ) throws -> FleetReadResult {
+        let repository = FleetRepository(rootURL: rootURL)
+        _ = try repository.publish(snapshot)
+        return repository.load()
+    }
+
+    func publishAndSave(
+        _ snapshot: MachineSnapshot,
+        manifest: FleetManifest,
+        replacingRevision: String,
+        rootURL: URL
+    ) throws -> FleetReadResult {
+        let repository = FleetRepository(rootURL: rootURL)
+        _ = try repository.publish(snapshot)
+        try repository.saveManifest(manifest, replacingRevision: replacingRevision)
+        return repository.load()
+    }
+
+    func save(
+        _ manifest: FleetManifest,
+        replacingRevision: String,
+        rootURL: URL
+    ) throws -> FleetReadResult {
+        let repository = FleetRepository(rootURL: rootURL)
+        try repository.saveManifest(manifest, replacingRevision: replacingRevision)
+        return repository.load()
+    }
+
+    /// Revalidates authority and publishes before the local fleet pointer is
+    /// changed. A failed connection therefore needs no rollback.
+    func connect(
+        snapshot: MachineSnapshot,
+        rootURL: URL,
+        persistLocalRoot: @Sendable (URL) throws -> LocalDeviceState
+    ) throws -> (FleetReadResult, LocalDeviceState) {
+        let repository = FleetRepository(rootURL: rootURL)
+        guard let pinnedManifest = repository.loadManifest().manifest else {
+            throw FleetRepositoryError.missingManifest
+        }
+
+        let reportURL = repository.machinesURL
+            .appendingPathComponent(snapshot.machineID.lowercased())
+            .appendingPathExtension("json")
+        let reportExisted = FileManager.default.fileExists(atPath: reportURL.path)
+        let previousReport: Data?
+        if reportExisted {
+            // Existing evidence is not ours to destroy. If it cannot be backed
+            // up exactly, connecting fails before publishing anything.
+            previousReport = try Data(contentsOf: reportURL, options: [.mappedIfSafe])
+        } else {
+            previousReport = nil
+        }
+        var published = false
+        var publishedReport: Data?
+        do {
+            _ = try repository.publish(snapshot)
+            published = true
+            publishedReport = try Data(contentsOf: reportURL, options: [.mappedIfSafe])
+            let read = repository.load()
+            guard let liveManifest = read.manifest else {
+                throw FleetRepositoryError.missingManifest
+            }
+            guard liveManifest.revision == pinnedManifest.revision else {
+                throw FleetRepositoryError.manifestChanged
+            }
+            let localState = try persistLocalRoot(rootURL)
+            return (read, localState)
+        } catch {
+            if published {
+                let currentReport = try? Data(contentsOf: reportURL, options: [.mappedIfSafe])
+                // Restore only while the file still contains this transaction's
+                // bytes. A concurrent check-in owns any different current data.
+                if currentReport == publishedReport {
+                    if let previousReport {
+                        try previousReport.write(to: reportURL, options: .atomic)
+                        try? FileManager.default.setAttributes(
+                            [.posixPermissions: 0o600],
+                            ofItemAtPath: reportURL.path
+                        )
+                    } else if FileManager.default.fileExists(atPath: reportURL.path) {
+                        try FileManager.default.removeItem(at: reportURL)
+                    }
+                }
+            }
+            throw error
+        }
+    }
+}
+
 private struct LoadedMachineReport: Sendable {
     let snapshot: MachineSnapshot
     let sourceURL: URL
@@ -216,11 +439,17 @@ private struct LoadedMachineReport: Sendable {
     }
 }
 
+private struct FleetManifestRevisionRecord: Codable, Hashable, Sendable {
+    let parentRevision: String?
+    let manifest: FleetManifest
+}
+
 enum FleetRepositoryError: LocalizedError {
     case invalidMachineID
     case futureSchema(Int)
     case missingManifest
     case manifestChanged
+    case manifestRevisionCollision(String)
 
     var errorDescription: String? {
         switch self {
@@ -232,6 +461,8 @@ enum FleetRepositoryError: LocalizedError {
             "The fleet baseline disappeared before the change could be saved. Scan again before changing scope."
         case .manifestChanged:
             "Another Mac changed the fleet baseline. FleetMesh reloaded it instead of overwriting newer desired state. Review the latest scope and try again."
+        case .manifestRevisionCollision(let revision):
+            "Fleet policy revision \(revision) already has different ancestry. FleetMesh did not overwrite it."
         }
     }
 }

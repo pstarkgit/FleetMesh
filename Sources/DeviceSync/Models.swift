@@ -120,6 +120,10 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
     let installedVersion: String?
     let build: String?
     let installedRevision: String?
+    /// Version declared by the product's own source checkout. This is separate
+    /// from the installed version so FleetMesh can track the newest deployed,
+    /// clean repository build without rewriting desired-state JSON on a scan.
+    let sourceVersion: String?
     let sourceRevision: String?
     let sourceBranch: String?
     let sourceDirty: Bool?
@@ -136,6 +140,7 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
         installedVersion: String? = nil,
         build: String? = nil,
         installedRevision: String? = nil,
+        sourceVersion: String? = nil,
         sourceRevision: String? = nil,
         sourceBranch: String? = nil,
         sourceDirty: Bool? = nil,
@@ -151,6 +156,7 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
         self.installedVersion = installedVersion
         self.build = build
         self.installedRevision = installedRevision
+        self.sourceVersion = sourceVersion
         self.sourceRevision = sourceRevision
         self.sourceBranch = sourceBranch
         self.sourceDirty = sourceDirty
@@ -930,6 +936,25 @@ struct FleetManifest: Codable, Hashable, Sendable {
         guard ComponentLifecycle.isActive(id) else { return nil }
         return targets.first { $0.id == id }
     }
+
+}
+
+struct RepositoryBuildTarget: Hashable, Sendable {
+    let version: String
+    let installedRevision: String?
+    let sourceRevision: String
+}
+
+enum FleetTargetBasis: String, Sendable {
+    case latestRepository
+    case savedBaseline
+
+    var label: String {
+        switch self {
+        case .latestRepository: "Latest repo"
+        case .savedBaseline: "Saved baseline"
+        }
+    }
 }
 
 enum FleetManifestError: LocalizedError {
@@ -1020,6 +1045,29 @@ struct ComponentDrift: Identifiable, Hashable, Sendable {
     let summary: String
     let expected: String?
     let observed: String?
+    let targetBasis: FleetTargetBasis
+
+    init(
+        componentID: String,
+        name: String,
+        kind: ComponentKind,
+        state: DriftState,
+        severity: DriftSeverity,
+        summary: String,
+        expected: String?,
+        observed: String?,
+        targetBasis: FleetTargetBasis = .savedBaseline
+    ) {
+        self.componentID = componentID
+        self.name = name
+        self.kind = kind
+        self.state = state
+        self.severity = severity
+        self.summary = summary
+        self.expected = expected
+        self.observed = observed
+        self.targetBasis = targetBasis
+    }
 
     var id: String { "\(componentID)-\(state.rawValue)-\(summary)" }
 }
@@ -1037,6 +1085,33 @@ enum FleetVerdict: String, Sendable {
         case .critical: "Action required"
         case .unknown: "Evidence incomplete"
         }
+    }
+
+    var headlessExitCode: Int32 {
+        switch self {
+        case .aligned: 0
+        case .attention: 2
+        case .critical: 3
+        case .unknown: 4
+        }
+    }
+}
+
+enum FleetHealthEvaluator {
+    static func verdict(
+        manifest: FleetManifest?,
+        assessments: [MachineAssessment],
+        issueCount: Int,
+        missingEnrolledCount: Int,
+        hasRuntimeError: Bool = false
+    ) -> FleetVerdict {
+        if hasRuntimeError || manifest == nil || issueCount > 0 || missingEnrolledCount > 0 {
+            return .unknown
+        }
+        if assessments.contains(where: { $0.verdict == .critical }) { return .critical }
+        if assessments.contains(where: { $0.verdict == .attention }) { return .attention }
+        if assessments.isEmpty { return .unknown }
+        return .aligned
     }
 }
 

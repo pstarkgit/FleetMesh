@@ -19,6 +19,36 @@ struct ProcessSSHRemoteCommandRunner: SSHRemoteCommandRunning {
         timeout: TimeInterval
     ) async -> SSHRemoteCommandResult {
         await Task.detached(priority: .utility) {
+            let captureRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("fleetmesh-ssh-\(UUID().uuidString)", isDirectory: true)
+            let outputURL = captureRoot.appendingPathComponent("stdout")
+            let errorURL = captureRoot.appendingPathComponent("stderr")
+            do {
+                try FileManager.default.createDirectory(
+                    at: captureRoot,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                _ = FileManager.default.createFile(
+                    atPath: outputURL.path,
+                    contents: nil,
+                    attributes: [.posixPermissions: 0o600]
+                )
+                _ = FileManager.default.createFile(
+                    atPath: errorURL.path,
+                    contents: nil,
+                    attributes: [.posixPermissions: 0o600]
+                )
+            } catch {
+                return SSHRemoteCommandResult(
+                    exitCode: -1,
+                    standardOutput: "",
+                    standardError: error.localizedDescription,
+                    timedOut: false
+                )
+            }
+            defer { try? FileManager.default.removeItem(at: captureRoot) }
+
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = [
@@ -34,13 +64,17 @@ struct ProcessSSHRemoteCommandRunner: SSHRemoteCommandRunning {
             ]
 
             let input = Pipe()
-            let output = Pipe()
-            let error = Pipe()
             process.standardInput = input
-            process.standardOutput = output
-            process.standardError = error
 
             do {
+                let outputHandle = try FileHandle(forWritingTo: outputURL)
+                let errorHandle = try FileHandle(forWritingTo: errorURL)
+                defer {
+                    try? outputHandle.close()
+                    try? errorHandle.close()
+                }
+                process.standardOutput = outputHandle
+                process.standardError = errorHandle
                 try process.run()
                 input.fileHandleForWriting.write(Data(script.utf8))
                 try? input.fileHandleForWriting.close()
@@ -60,17 +94,22 @@ struct ProcessSSHRemoteCommandRunner: SSHRemoteCommandRunning {
                     }
                     if process.isRunning {
                         Darwin.kill(process.processIdentifier, SIGKILL)
+                        let killDeadline = Date().addingTimeInterval(1)
+                        while process.isRunning && Date() < killDeadline {
+                            try? await Task.sleep(for: .milliseconds(100))
+                        }
                     }
                 }
-                process.waitUntilExit()
+                try? outputHandle.close()
+                try? errorHandle.close()
                 return SSHRemoteCommandResult(
-                    exitCode: process.terminationStatus,
+                    exitCode: process.isRunning ? -1 : process.terminationStatus,
                     standardOutput: String(
-                        data: output.fileHandleForReading.readDataToEndOfFile(),
+                        data: Self.readPrefix(outputURL, maximumBytes: 262_144),
                         encoding: .utf8
                     ) ?? "",
                     standardError: String(
-                        data: error.fileHandleForReading.readDataToEndOfFile(),
+                        data: Self.readPrefix(errorURL, maximumBytes: 262_144),
                         encoding: .utf8
                     ) ?? "",
                     timedOut: timedOut
@@ -85,6 +124,15 @@ struct ProcessSSHRemoteCommandRunner: SSHRemoteCommandRunning {
                 )
             }
         }.value
+    }
+
+    private static func readPrefix(
+        _ url: URL,
+        maximumBytes: Int
+    ) -> Data {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return Data() }
+        defer { try? handle.close() }
+        return (try? handle.read(upToCount: maximumBytes)) ?? Data()
     }
 }
 
@@ -221,15 +269,7 @@ struct SSHRemoteInventoryService: RemoteInventoryCapturing {
 
     private static func normalizedVersion(_ value: String?) -> String? {
         guard let value = value?.nilIfBlank else { return nil }
-        let pattern = #"\b\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?\b"#
-        guard let expression = try? NSRegularExpression(pattern: pattern),
-              let match = expression.firstMatch(
-                  in: value,
-                  range: NSRange(value.startIndex..., in: value)
-              ), let range = Range(match.range, in: value) else {
-            return String(value.prefix(80))
-        }
-        return String(value[range])
+        return VersionIdentity.extract(from: value, fallbackLimit: 80)
     }
 
     private static func safeErrorSummary(_ error: String) -> String {
@@ -271,11 +311,15 @@ git_state() {
   key="$1"
   checkout="$2"
   if [ -d "$checkout/.git" ] && command -v git >/dev/null 2>&1; then
-    revision="$(git -C "$checkout" rev-parse --short=12 HEAD 2>/dev/null || true)"
-    branch="$(git -C "$checkout" branch --show-current 2>/dev/null || true)"
+    git_read() { GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 git "$@"; }
+    revision_full="$(git_read -C "$checkout" rev-parse HEAD 2>/dev/null)" || return 0
+    branch="$(git_read -C "$checkout" branch --show-current 2>/dev/null || true)"
+    status="$(git_read -C "$checkout" status --porcelain 2>/dev/null)" || return 0
     dirty=false
-    [ -z "$(git -C "$checkout" status --porcelain 2>/dev/null || true)" ] || dirty=true
-    emit "component.$key.sourceRevision" "$(clean "$revision")"
+    [ -z "$status" ] || dirty=true
+    final_revision="$(git_read -C "$checkout" rev-parse HEAD 2>/dev/null)" || return 0
+    [ "$final_revision" = "$revision_full" ] || return 0
+    emit "component.$key.sourceRevision" "$(clean "$(printf '%s' "$revision_full" | cut -c1-12)")"
     emit "component.$key.sourceBranch" "$(clean "$branch")"
     emit "component.$key.sourceDirty" "$dirty"
   fi

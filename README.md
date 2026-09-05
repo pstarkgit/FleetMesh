@@ -63,6 +63,14 @@ desired versions or fingerprints, device enrollment, roles, and per-device
 overrides. Changing fleet defaults, enrolling or removing a device, and marking
 an item Required or Excluded are explicit desired-state actions.
 
+For managed software with a local product checkout, FleetMesh reads the version
+declared by this Mac's committed `HEAD` without fetching, pulling, or changing
+it. A fresh, clean checkout and installed build must prove the same version and
+revision before that local repository identity becomes the runtime target.
+Synced machine reports never redefine targets. The saved manifest remains the
+fallback and the authority for scope, device policy, and configuration/theme
+fingerprints. Cards label this provenance as **Latest repo** or **Saved baseline**.
+
 Codex Voice remains observable evidence, but it is outside the managed daily
 baseline. FleetMesh should not uninstall it or repair it as part of normal fleet
 posture.
@@ -110,9 +118,20 @@ never assumed healthy.
 The default shared folder is
 `~/Library/CloudStorage/OneDrive-amazon.com/Device Sync` when that OneDrive
 root exists. Otherwise FleetMesh uses its local Application Support folder until
-the user points it at the shared fleet folder. On a new Mac, make OneDrive
-available before first authoritative scan so FleetMesh reads the existing
-manifest instead of asking to seed a new baseline.
+the user points it at the shared fleet folder.
+
+On a new Mac:
+
+1. Let OneDrive finish syncing the existing `Device Sync` folder.
+2. Open FleetMesh and connect the folder containing `fleet-manifest.json`.
+3. Review the redacted evidence and compatible inherited defaults.
+4. Choose **Join this Mac** and confirm its device role.
+5. Continue to Bootstrap to review any required installations or updates.
+
+FleetMesh never creates or replaces a baseline during an ordinary scan. If the
+manifest is missing or unreadable, it waits for sync or asks for the correct
+folder. Creating a new fleet requires the explicit baseline action (or the
+explicit `--adopt-baseline` recovery command).
 
 ## Doctor
 
@@ -137,6 +156,7 @@ Headless verification:
 
 ```bash
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --check
+/Applications/FleetMesh.app/Contents/MacOS/DeviceSync --self-check
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --snapshot
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --adopt-baseline
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --add-to-scope <component-id>
