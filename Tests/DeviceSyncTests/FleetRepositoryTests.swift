@@ -294,6 +294,33 @@ struct FleetRepositoryTests {
         #expect(state.displayName == nil)
         #expect(state.machineID == "b41f9f4f-0fce-4792-a3c6-c93a73fcb4cd")
     }
+
+    @Test
+    func hiddenCatalogItemsPersistLocallyAndCanBeRestored() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stateURL = root.appendingPathComponent("state/local-state.json")
+        let repository = LocalStateRepository(stateURL: stateURL, homeURL: root)
+
+        let initial = try repository.loadOrCreate()
+        let hidden = try repository.settingComponentHidden(
+            componentID: "codex-voice",
+            hidden: true
+        )
+        let persistedJSON = try String(contentsOf: stateURL, encoding: .utf8)
+
+        #expect(hidden.machineID == initial.machineID)
+        #expect(hidden.hiddenComponents == ["codex-voice"])
+        #expect(try repository.loadOrCreate().hiddenComponents == ["codex-voice"])
+        #expect(persistedJSON.contains("codex-voice"))
+
+        let restored = try repository.settingComponentHidden(
+            componentID: "codex-voice",
+            hidden: false
+        )
+        #expect(restored.hiddenComponents.isEmpty)
+        #expect(try repository.loadOrCreate().hiddenComponents.isEmpty)
+    }
 }
 
 struct FleetScopeOrchestrationTests {

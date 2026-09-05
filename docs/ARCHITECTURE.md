@@ -14,7 +14,7 @@ flowchart TB
       Bar[Menu-bar command center] --> Store
       Store --> LocalProbe[Read-only local probes]
       Store --> SSH[Fixed read-only SSH check-in]
-      Store --> LocalState[Local-only state\nfleet pointer + SSH endpoints]
+      Store --> LocalState[Local-only state\nfleet pointer + SSH endpoints\nUI visibility preferences]
     end
 
     subgraph Shared[Shared Device Sync folder]
@@ -38,6 +38,7 @@ flowchart TB
 | What a device actually has | Fresh read-only probes from that device |
 | Product installation and runtime state | The product's own installer/runtime |
 | Linux SSH reachability from this controller Mac | Local Application Support state only |
+| Hidden Available-item preferences | Local Application Support state only |
 | Claude and OMP linked config | `~/harness-sync` |
 | AI continuity databases | ai-continuum local storage |
 | Durable human/agent knowledge | BrainVault/StarkBrain and repository docs |

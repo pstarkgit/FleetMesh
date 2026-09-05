@@ -281,6 +281,52 @@ struct DevicePolicyStoreTests {
 
     @Test
     @MainActor
+    func availableItemCanHideLocallyWithoutChangingFleetOrEvidence() async throws {
+        let fixture = try DeviceStoreFixture()
+        defer { fixture.cleanUp() }
+        await fixture.store.start()
+        let revision = try #require(fixture.store.manifest?.revision)
+
+        #expect(fixture.store.fleetScopeItems.contains { $0.id == "codex-voice" })
+        #expect(fixture.store.hiddenFleetScopeItems.isEmpty)
+
+        fixture.store.setComponentHidden(componentID: "codex-voice", hidden: true)
+
+        #expect(!fixture.store.fleetScopeItems.contains { $0.id == "codex-voice" })
+        #expect(fixture.store.hiddenFleetScopeItems.map(\.id) == ["codex-voice"])
+        #expect(fixture.store.manifest?.revision == revision)
+        #expect(fixture.store.localSnapshot?.component("codex-voice") != nil)
+        #expect(await fixture.doctorRunner.callCount() == 0)
+
+        await fixture.store.refresh()
+
+        #expect(!fixture.store.fleetScopeItems.contains { $0.id == "codex-voice" })
+        #expect(fixture.store.hiddenFleetScopeItems.map(\.id) == ["codex-voice"])
+        #expect(fixture.store.manifest?.revision == revision)
+
+        fixture.store.setComponentHidden(componentID: "codex-voice", hidden: false)
+
+        #expect(fixture.store.fleetScopeItems.contains { $0.id == "codex-voice" })
+        #expect(fixture.store.hiddenFleetScopeItems.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func managedItemCannotBeHidden() async throws {
+        let fixture = try DeviceStoreFixture()
+        defer { fixture.cleanUp() }
+        await fixture.store.start()
+
+        fixture.store.setComponentHidden(componentID: "authbar", hidden: true)
+
+        #expect(fixture.store.fleetScopeItems.contains { $0.id == "authbar" })
+        #expect(fixture.store.hiddenFleetScopeItems.isEmpty)
+        #expect(fixture.store.localState?.hiddenComponents.isEmpty == true)
+        #expect(fixture.store.lastError?.contains("Remove AuthBar from fleet scope") == true)
+    }
+
+    @Test
+    @MainActor
     func staleDevicePolicyWriteCannotOverwriteNewerManifest() async throws {
         let fixture = try DeviceStoreFixture()
         defer { fixture.cleanUp() }

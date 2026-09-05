@@ -67,6 +67,12 @@ Codex Voice remains observable evidence, but it is outside the managed daily
 baseline. FleetMesh should not uninstall it or repair it as part of normal fleet
 posture.
 
+An observed item outside fleet scope can also be hidden from the local
+Available list. This reversible presentation preference lives only in this
+Mac's `local-state.json`; it does not alter the manifest, suppress inventory,
+uninstall software, or affect another device. Hidden items remain recoverable
+from the collapsed **Hidden items** section in Settings.
+
 Kiro Crew is the active managed agent product. MeshClaw is retired; older
 `meshclaw-themes` evidence is ignored instead of being treated as current Kiro
 Crew state.

@@ -1723,6 +1723,7 @@ struct SettingsView: View {
     @State private var confirmBaseline = false
     @State private var machineNameDraft = ""
     @State private var pendingScopeChange: PendingScopeChange?
+    @State private var showHiddenItems = false
 
     var body: some View {
         ScrollView {
@@ -1852,7 +1853,7 @@ struct SettingsView: View {
                         }
                     }
 
-                    Text("Removing an item changes fleet scope only. It does not uninstall the app, delete source, or erase observed evidence. Add it again from this list when you want FleetMesh to manage it.")
+                    Text("Remove changes fleet scope. Hide only cleans up this Mac's Available list. Neither action uninstalls the app, deletes source, or erases observed evidence.")
                         .font(.caption)
                         .foregroundStyle(DSTheme.inkSoft)
 
@@ -1868,7 +1869,13 @@ struct SettingsView: View {
                             ForEach(Array(store.fleetScopeItems.enumerated()), id: \.element.id) { index, item in
                                 ManagedItemRow(
                                     item: item,
-                                    isBusy: store.isBusy
+                                    isBusy: store.isBusy,
+                                    hide: {
+                                        store.setComponentHidden(
+                                            componentID: item.id,
+                                            hidden: true
+                                        )
+                                    }
                                 ) {
                                     pendingScopeChange = PendingScopeChange(
                                         item: item,
@@ -1885,6 +1892,52 @@ struct SettingsView: View {
                         .overlay {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .stroke(DSTheme.line, lineWidth: 1)
+                        }
+
+                        if !store.hiddenFleetScopeItems.isEmpty {
+                            DisclosureGroup(isExpanded: $showHiddenItems) {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text("Hidden only from this Available list on this Mac. FleetMesh still inventories these items, and shared fleet state is unchanged.")
+                                        .font(.caption)
+                                        .foregroundStyle(DSTheme.inkMuted)
+                                        .padding(.horizontal, 12)
+                                        .padding(.bottom, 8)
+                                    ForEach(
+                                        Array(store.hiddenFleetScopeItems.enumerated()),
+                                        id: \.element.id
+                                    ) { index, item in
+                                        HiddenManagedItemRow(
+                                            item: item,
+                                            isBusy: store.isBusy
+                                        ) {
+                                            store.setComponentHidden(
+                                                componentID: item.id,
+                                                hidden: false
+                                            )
+                                        }
+                                        if index < store.hiddenFleetScopeItems.count - 1 {
+                                            Divider().padding(.leading, 44)
+                                        }
+                                    }
+                                }
+                                .padding(.top, 10)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Label("Hidden items", systemImage: "eye.slash")
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Text("\(store.hiddenFleetScopeItems.count)")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(DSTheme.inkMuted)
+                                }
+                            }
+                            .padding(12)
+                            .background(DSTheme.canvas)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(DSTheme.line, lineWidth: 1)
+                            }
                         }
                     }
                 }
@@ -1968,6 +2021,7 @@ private struct PendingScopeChange {
 private struct ManagedItemRow: View {
     let item: FleetScopeItem
     let isBusy: Bool
+    let hide: () -> Void
     let changeScope: () -> Void
 
     var body: some View {
@@ -1995,6 +2049,15 @@ private struct ManagedItemRow: View {
             Text(item.isManaged ? "Managed" : "Available")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(item.isManaged ? DSTheme.green : DSTheme.inkMuted)
+            if !item.isManaged {
+                Button(action: hide) {
+                    Label("Hide", systemImage: "eye.slash")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(DSTheme.inkMuted)
+                .disabled(isBusy)
+                .accessibilityLabel("Hide \(item.name) from Available items on this Mac")
+            }
             Button(item.isManaged ? "Remove" : "Add", action: changeScope)
                 .buttonStyle(.bordered)
                 .disabled(isBusy || (!item.isManaged && !item.canAdd))
@@ -2011,6 +2074,44 @@ private struct ManagedItemRow: View {
         case .configuration: "slider.horizontal.3"
         case .theme: "paintpalette.fill"
         }
+    }
+}
+
+private struct HiddenManagedItemRow: View {
+    let item: FleetScopeItem
+    let isBusy: Bool
+    let show: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "eye.slash.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(DSTheme.inkMuted)
+                .frame(width: 32, height: 32)
+                .background(DSTheme.inkMuted.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 7) {
+                    Text(item.name)
+                        .font(.subheadline.weight(.semibold))
+                    Text(item.kind.label.uppercased())
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(DSTheme.inkMuted)
+                }
+                Text(item.observedSummary)
+                    .font(.caption)
+                    .foregroundStyle(DSTheme.inkMuted)
+            }
+            Spacer()
+            Text("Hidden locally")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(DSTheme.inkMuted)
+            Button("Show", action: show)
+                .buttonStyle(.bordered)
+                .disabled(isBusy)
+                .accessibilityLabel("Show \(item.name) in Available items")
+        }
+        .padding(12)
     }
 }
 

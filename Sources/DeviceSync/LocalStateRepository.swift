@@ -74,9 +74,17 @@ struct LocalDeviceState: Codable, Hashable, Sendable {
     // shared manifest or machine report, and credentials stay in ssh-agent,
     // Keychain, or the user's SSH configuration.
     var remoteDevices: [RemoteDeviceConnection]? = nil
+    // Local presentation preference only. These stable component IDs never
+    // enter the shared manifest or machine report, and hiding one does not
+    // suppress inventory evidence.
+    var hiddenComponentIDs: [String]? = nil
 
     var remoteConnections: [RemoteDeviceConnection] {
         remoteDevices ?? []
+    }
+
+    var hiddenComponents: Set<String> {
+        Set(hiddenComponentIDs ?? [])
     }
 }
 
@@ -168,6 +176,22 @@ struct LocalStateRepository: Sendable {
         var state = try loadOrCreate()
         let trimmed = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
         state.displayName = trimmed?.isEmpty == false ? trimmed : nil
+        try save(state)
+        return state
+    }
+
+    func settingComponentHidden(
+        componentID: String,
+        hidden: Bool
+    ) throws -> LocalDeviceState {
+        var state = try loadOrCreate()
+        var hiddenIDs = state.hiddenComponents
+        if hidden {
+            hiddenIDs.insert(componentID)
+        } else {
+            hiddenIDs.remove(componentID)
+        }
+        state.hiddenComponentIDs = hiddenIDs.isEmpty ? nil : hiddenIDs.sorted()
         try save(state)
         return state
     }

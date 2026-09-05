@@ -27,6 +27,9 @@
   and menu-bar command center, with a dark Aurora evidence canvas.
 - Reworked the 19-point menu-bar mark for crowded real-world bars: a full-size
   white-core Aurora bridge replaces the dim glyph and overlapping status badge.
+- Added a reversible local Hide action for unwanted Available discoveries, plus
+  a collapsed Hidden items section for restoring them without changing shared
+  fleet scope, inventory evidence, or installed software.
 - Preserved all legacy compatibility identifiers, including
   `dev.starkpat.devicesync`, `DeviceSync`, `device-sync`,
   `deviceSyncVersion`, the `Device Sync` folders, LaunchAgent label, and

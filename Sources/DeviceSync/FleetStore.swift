@@ -64,7 +64,7 @@ final class FleetStore {
         isRefreshing || isDoctorRunning || isUpdatingScope || !checkingRemoteDeviceIDs.isEmpty
     }
 
-    var fleetScopeItems: [FleetScopeItem] {
+    private var catalogScopeItems: [FleetScopeItem] {
         var observations: [String: ComponentObservation] = [:]
         for observation in localSnapshot?.components ?? []
             where ComponentLifecycle.isActive(observation.id) {
@@ -85,6 +85,21 @@ final class FleetStore {
                 if lhs.isManaged != rhs.isManaged { return lhs.isManaged }
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
+    }
+
+    var fleetScopeItems: [FleetScopeItem] {
+        let hiddenIDs = localState?.hiddenComponents ?? []
+        return catalogScopeItems.filter { item in
+            // Shared desired state wins over a local presentation preference.
+            item.isManaged || !hiddenIDs.contains(item.id)
+        }
+    }
+
+    var hiddenFleetScopeItems: [FleetScopeItem] {
+        let hiddenIDs = localState?.hiddenComponents ?? []
+        return catalogScopeItems.filter { item in
+            !item.isManaged && hiddenIDs.contains(item.id)
+        }
     }
 
     var filteredDevices: [FleetDeviceItem] {
@@ -293,6 +308,34 @@ final class FleetStore {
             lastError = error.localizedDescription
             lastActionMessage = nil
             await reloadFleet()
+        }
+    }
+
+    func setComponentHidden(componentID: String, hidden: Bool) {
+        guard !isBusy else { return }
+        guard let item = catalogScopeItems.first(where: { $0.id == componentID }) else {
+            lastError = FleetStoreError.unknownCatalogComponent(componentID).localizedDescription
+            lastActionMessage = nil
+            return
+        }
+        guard !hidden || !item.isManaged else {
+            lastError = FleetStoreError.managedComponentCannotBeHidden(item.name).localizedDescription
+            lastActionMessage = nil
+            return
+        }
+
+        lastError = nil
+        do {
+            localState = try localRepository.settingComponentHidden(
+                componentID: componentID,
+                hidden: hidden
+            )
+            lastActionMessage = hidden
+                ? "\(item.name) is hidden from Available items on this Mac. It remains installed and observed."
+                : "\(item.name) is visible in Available items again."
+        } catch {
+            lastError = error.localizedDescription
+            lastActionMessage = nil
         }
     }
 
@@ -955,6 +998,8 @@ private enum FleetStoreError: LocalizedError {
     case missingManifestForRemoteCheckIn
     case unreadableManifestForRemoteCheckIn
     case pendingDeviceRoleRequiresEnrollment(String)
+    case managedComponentCannotBeHidden(String)
+    case unknownCatalogComponent(String)
 
     var errorDescription: String? {
         switch self {
@@ -966,6 +1011,10 @@ private enum FleetStoreError: LocalizedError {
             "The fleet baseline could not be read. Resolve that fleet issue before checking in a remote device."
         case .pendingDeviceRoleRequiresEnrollment(let name):
             "Add \(name) to the fleet before changing its role on this controller."
+        case .managedComponentCannotBeHidden(let name):
+            "Remove \(name) from fleet scope before hiding it from this Mac's Available list."
+        case .unknownCatalogComponent(let componentID):
+            "\(componentID) is no longer present in the FleetMesh catalog."
         }
     }
 }
