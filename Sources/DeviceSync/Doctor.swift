@@ -24,6 +24,15 @@ struct DoctorFinding: Identifiable, Hashable, Sendable {
 
     var id: String { drift.componentID }
     var canRepair: Bool { disposition == .repairable && recipe != nil }
+    var needsCheckoutResolution: Bool {
+        disposition == .protected && drift.state == .localChanges
+    }
+    var needsBaselineDecision: Bool {
+        disposition == .manual
+            && drift.state == .different
+            && drift.targetBasis == .savedBaseline
+            && (drift.kind == .configuration || drift.kind == .theme)
+    }
 }
 
 enum InlineRemediationAction: Equatable, Sendable {
@@ -299,7 +308,7 @@ struct DoctorPlanner: Sendable {
                 drift: drift,
                 disposition: .protected,
                 title: "Preserve local \(drift.name) work",
-                detail: "The checkout has local changes. Doctor will not pull, reset, build, or install over them.",
+                detail: "Commit intentional work; remove only confirmed generated files. Do not rebaseline while the checkout is dirty. Resolve it safely, then scan again.",
                 recipe: nil
             )
         }
@@ -310,6 +319,20 @@ struct DoctorPlanner: Sendable {
                 disposition: .manual,
                 title: "Restore \(drift.name) evidence",
                 detail: "The current state could not be verified, so Doctor cannot safely choose a repair.",
+                recipe: nil
+            )
+        }
+
+        if drift.state == .different,
+           drift.targetBasis == .savedBaseline,
+           observation?.sourceDirty != true,
+           (drift.kind == .configuration || drift.kind == .theme),
+           observation?.configurationFingerprint != nil {
+            return DoctorFinding(
+                drift: drift,
+                disposition: .manual,
+                title: "Review the committed \(drift.name) configuration",
+                detail: "Fresh clean evidence differs from the saved fleet baseline. A bootstrap cannot resolve an intentional committed fingerprint; review it, then explicitly adopt it only if this configuration should become fleet-wide desired state.",
                 recipe: nil
             )
         }

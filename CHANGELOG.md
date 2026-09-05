@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.11 — 2026-09-05
+
+- Replaced Doctor's dead-end protected checkout card with a guided resolution
+  flow: **Resolve with Codex**, **Review changes**, and **Scan again**.
+- Made the correct decision explicit: commit intentional Harness Sync work and
+  remove only confirmed generated files; never rebaseline merely to hide an
+  uncommitted checkout.
+- Added a scoped persistent Codex task launcher that runs in `~/harness-sync`
+  with a preservation-first brief, captures the real task ID, and owns the
+  background turn through completion. FleetMesh then renders the bounded final
+  agent summary and selectable task ID itself, avoiding app focus theft,
+  interruption, and macOS cross-app data permission prompts.
+  The agent may create a local branch and commit
+  tested intentional work, but push, PR, merge, destructive cleanup, and
+  configuration-changing sync/bootstrap actions remain separately authorized.
+- Kept baseline adoption separate. After the checkout is clean, FleetMesh scans
+  again and presents a **Decision required** card with a confirmed **Use observed
+  as baseline…** action only if the committed configuration changed. Doctor no
+  longer misroutes a clean committed fingerprint difference to bootstrap.
+
 ## 0.1.10 — 2026-09-05
 
 - Made fleet software posture version-first. Installed version, product-owned

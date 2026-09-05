@@ -15,6 +15,9 @@ final class FleetStore {
     private(set) var issues: [FleetIssue] = []
     private(set) var isRefreshing = false
     private(set) var isDoctorRunning = false
+    private(set) var isLaunchingCodexResolution = false
+    private(set) var completedCodexResolutionTaskID: String?
+    private(set) var completedCodexResolutionSummary: String?
     private(set) var isUpdatingScope = false
     private(set) var activeDoctorComponentID: String?
     private(set) var doctorRuns: [String: DoctorRunRecord] = [:]
@@ -37,6 +40,7 @@ final class FleetStore {
     private let bootstrapPlanner: BootstrapPlanner
     private let doctorPlanner: DoctorPlanner
     private let doctorCommandRunner: any DoctorCommandRunning
+    private let codexTaskLauncher: any DoctorCodexTaskLaunching
     private let doctorHomeURL: URL
     private let fleetAccess: FleetRepositoryAccess
 
@@ -48,6 +52,7 @@ final class FleetStore {
         bootstrapPlanner: BootstrapPlanner = BootstrapPlanner(),
         doctorPlanner: DoctorPlanner = DoctorPlanner(),
         doctorCommandRunner: any DoctorCommandRunning = ProcessDoctorCommandRunner(),
+        codexTaskLauncher: any DoctorCodexTaskLaunching = ProcessDoctorCodexTaskLauncher(),
         doctorHomeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
         fleetAccess: FleetRepositoryAccess = FleetRepositoryAccess()
     ) {
@@ -58,6 +63,7 @@ final class FleetStore {
         self.bootstrapPlanner = bootstrapPlanner
         self.doctorPlanner = doctorPlanner
         self.doctorCommandRunner = doctorCommandRunner
+        self.codexTaskLauncher = codexTaskLauncher
         self.doctorHomeURL = doctorHomeURL
         self.fleetAccess = fleetAccess
     }
@@ -67,7 +73,8 @@ final class FleetStore {
     }
 
     var isBusy: Bool {
-        isRefreshing || isDoctorRunning || isUpdatingScope || !checkingRemoteDeviceIDs.isEmpty
+        isRefreshing || isDoctorRunning || isLaunchingCodexResolution
+            || isUpdatingScope || !checkingRemoteDeviceIDs.isEmpty
     }
 
     private var catalogScopeItems: [FleetScopeItem] {
@@ -718,6 +725,54 @@ final class FleetStore {
 
     func doctorRun(for componentID: String) -> DoctorRunRecord? {
         doctorRuns[componentID]
+    }
+
+    func canResolveCheckoutWithCodex(_ finding: DoctorFinding) -> Bool {
+        guard let request = DoctorCodexResolution.request(
+            for: finding,
+            homeURL: doctorHomeURL
+        ) else { return false }
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(
+            atPath: request.workspaceURL.path,
+            isDirectory: &isDirectory
+        ) && isDirectory.boolValue
+    }
+
+    func resolveCheckoutWithCodex(_ finding: DoctorFinding) async {
+        guard !isBusy else { return }
+        isLaunchingCodexResolution = true
+        lastError = nil
+        lastActionMessage = nil
+        completedCodexResolutionTaskID = nil
+        completedCodexResolutionSummary = nil
+        defer { isLaunchingCodexResolution = false }
+        guard canResolveCheckoutWithCodex(finding), let request = DoctorCodexResolution.request(
+                for: finding,
+                homeURL: doctorHomeURL
+              ) else {
+            lastError = "FleetMesh could not prepare a scoped Codex task for \(finding.drift.name)."
+            return
+        }
+        do {
+            let launch = try await codexTaskLauncher.launch(request)
+            completedCodexResolutionTaskID = launch.threadID
+            completedCodexResolutionSummary = launch.summary
+            lastActionMessage = "Codex task \(launch.threadID) finished for \(finding.drift.name). Review its result, then scan again."
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func revealCheckout(componentID: String) {
+        guard let checkout = FleetComponentPaths.sourceCheckout(
+            componentID: componentID,
+            homeURL: doctorHomeURL
+        ) else {
+            lastError = "FleetMesh does not know a local checkout for \(componentID)."
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([checkout])
     }
 
     func repair(componentID: String, targetMachineID: String) async {
