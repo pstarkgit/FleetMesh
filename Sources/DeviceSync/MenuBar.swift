@@ -3,7 +3,8 @@ import Observation
 import SwiftUI
 
 enum DeviceSyncStatusItemPlacement {
-    static let autosaveName = "DeviceSync"
+    // Preserve the pre-FleetMesh identity so AppKit reuses the user's slot.
+    static let autosaveName = FleetMeshIdentity.statusItemAutosaveName
     static let preferenceKey = "NSStatusItem Preferred Position \(autosaveName)"
     static let defaultOffsetFromRightEdge = 48
 
@@ -30,7 +31,7 @@ final class DeviceSyncStatusItemController: NSObject {
 
         // The anonymous status item SwiftUI created could be pushed into this
         // Mac's crowded off-screen overflow. A named AppKit item owns a stable
-        // Device Sync-only slot without changing any other app's placement.
+        // FleetMesh-only slot without changing any other app's placement.
         DeviceSyncStatusItemPlacement.prepare()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.autosaveName = DeviceSyncStatusItemPlacement.autosaveName
@@ -91,16 +92,75 @@ final class DeviceSyncStatusItemController: NSObject {
     private func updateStatusItem() {
         let summary = store.menuBarSummary
         guard let button = statusItem.button else { return }
-        let label = "Device Sync — \(summary.headline)"
-        let image = NSImage(
-            systemSymbolName: summary.statusSymbol,
-            accessibilityDescription: label
-        )
-        image?.isTemplate = true
+        let label = "\(FleetMeshIdentity.productName) — \(summary.headline)"
+        let image = Self.statusItemImage(summary: summary, label: label)
         button.image = image
         button.imagePosition = .imageOnly
         button.toolTip = "\(label) · \(summary.machineLabel) · \(summary.attentionLabel)"
         button.setAccessibilityLabel(label)
+    }
+
+    private static func statusItemImage(summary: MenuBarSummary, label: String) -> NSImage {
+        let size = NSSize(width: 19, height: 19)
+        let image = NSImage(size: size, flipped: false) { rect in
+            NSColor.labelColor.setStroke()
+            NSColor.labelColor.setFill()
+            let markRect = rect.insetBy(dx: 1.4, dy: 1.4)
+            let links = NSBezierPath(FleetMeshMarkGeometry.links(in: markRect))
+            links.lineWidth = 1.35
+            links.lineCapStyle = .round
+            links.lineJoinStyle = .round
+            links.stroke()
+            NSBezierPath(FleetMeshMarkGeometry.nodes(in: markRect)).fill()
+
+            let badgeRect = NSRect(x: 12.0, y: 0.8, width: 6.2, height: 6.2)
+            NSColor.controlBackgroundColor.setFill()
+            NSBezierPath(ovalIn: badgeRect.insetBy(dx: -1, dy: -1)).fill()
+            Self.badgeColor(for: summary).setFill()
+            NSBezierPath(ovalIn: badgeRect).fill()
+            return true
+        }
+        image.accessibilityDescription = label
+        image.isTemplate = false
+        return image
+    }
+
+    private static func badgeColor(for summary: MenuBarSummary) -> NSColor {
+        if summary.isScanning { return .systemBlue }
+        if summary.errorMessage != nil { return .systemRed }
+        switch summary.verdict {
+        case .aligned: return .systemGreen
+        case .attention: return .systemOrange
+        case .critical: return .systemRed
+        case .unknown: return .systemGray
+        }
+    }
+}
+
+private extension NSBezierPath {
+    convenience init(_ path: Path) {
+        self.init()
+        path.cgPath.applyWithBlock { elementPointer in
+            let element = elementPointer.pointee
+            switch element.type {
+            case .moveToPoint:
+                move(to: element.points[0])
+            case .addLineToPoint:
+                line(to: element.points[0])
+            case .addQuadCurveToPoint:
+                break
+            case .addCurveToPoint:
+                curve(
+                    to: element.points[2],
+                    controlPoint1: element.points[0],
+                    controlPoint2: element.points[1]
+                )
+            case .closeSubpath:
+                close()
+            @unknown default:
+                break
+            }
+        }
     }
 }
 
@@ -183,21 +243,14 @@ struct DeviceSyncMenuBarView: View {
         HStack(spacing: 11) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [DSTheme.blue, DSTheme.cyan],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                Image(systemName: "arrow.triangle.2.circlepath.icloud.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .fill(DSTheme.auroraGradient)
+                FleetMeshMark()
+                    .padding(6)
             }
             .frame(width: 38, height: 38)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text("Device Sync")
+                Text(FleetMeshIdentity.productName)
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(DSTheme.ink)
                 Text("Mac fleet control plane")
@@ -331,7 +384,7 @@ struct DeviceSyncMenuBarView: View {
             Text(store.localSnapshot?.name ?? "This Mac")
                 .lineLimit(1)
             Spacer()
-            Button("Quit Device Sync") { quit() }
+            Button("Quit \(FleetMeshIdentity.productName)") { quit() }
                 .buttonStyle(.plain)
                 .foregroundStyle(DSTheme.inkSoft)
                 .accessibilityIdentifier("devicesync.menu.quit")

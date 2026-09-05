@@ -1,8 +1,8 @@
-# AGENTS.md — Device Sync
+# AGENTS.md — FleetMesh
 
 ## Product contract
 
-Device Sync is Patrick's native macOS fleet control plane. It answers three
+FleetMesh is Patrick's native macOS fleet control plane. It answers three
 questions with evidence:
 
 1. What is installed and configured on each Mac?
@@ -15,7 +15,7 @@ or replacing a theme always requires an explicit user action.
 
 ## Ownership boundaries
 
-- Device Sync owns the desired-state manifest, redacted machine snapshots,
+- FleetMesh owns the desired-state manifest, redacted machine snapshots,
   drift calculation, bootstrap orchestration UI, and Doctor's hard-coded local
   repair catalog.
 - Each managed product owns its own installer, updater, runtime state, and
@@ -28,6 +28,10 @@ or replacing a theme always requires an explicit user action.
 - ai-continuum owns its SQLite databases. Never copy live SQLite, WAL, socket,
   credentials, tokens, cookies, or Keychain material into the fleet folder.
 - BrainVault/StarkBrain is durable knowledge, not the live fleet-state store.
+- The former Device Sync bundle name is legacy compatibility state. Preserve
+  `dev.starkpat.devicesync`, executable/module `DeviceSync`, component ID
+  `device-sync`, snapshot key `deviceSyncVersion`, the `Device Sync` state and
+  fleet folders, LaunchAgent label, and status-item autosave name.
 
 ## Fleet protocol
 

@@ -22,7 +22,7 @@ struct BootstrapPlanner: Sendable {
             phase: .validation,
             title: "Re-scan and publish proof",
             detail: "Run every read-only probe again, publish a fresh snapshot, and require the dashboard to show the resulting state.",
-            command: "/Applications/Device Sync.app/Contents/MacOS/DeviceSync --snapshot",
+            command: "\(FleetMeshIdentity.executablePath) --snapshot",
             requiresReview: false
         ))
 
@@ -41,7 +41,7 @@ struct BootstrapPlanner: Sendable {
                 phase: phase,
                 componentID: drift.componentID,
                 title: "Review local \(drift.name) work",
-                detail: "Preserve or reconcile the checkout before any pull, build, or install. Device Sync will not overwrite it.",
+                detail: "Preserve or reconcile the checkout before any pull, build, or install. FleetMesh will not overwrite it.",
                 command: nil,
                 requiresReview: true
             )

@@ -74,21 +74,14 @@ struct RootView: View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [DSTheme.blue, DSTheme.cyan],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                Image(systemName: "arrow.triangle.2.circlepath.icloud.fill")
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .fill(DSTheme.auroraGradient)
+                FleetMeshMark()
+                    .padding(6)
             }
             .frame(width: 42, height: 42)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Device Sync")
+                Text(FleetMeshIdentity.productName)
                     .font(.system(size: 17, weight: .bold))
                 Text("Mac fleet control plane")
                     .font(.caption)
@@ -208,7 +201,7 @@ struct FleetView: View {
 
     private var fleetHeadline: String {
         guard store.manifest != nil else {
-            return "No verified baseline is available. Device Sync will not infer one from missing evidence."
+            return "No verified baseline is available. FleetMesh will not infer one from missing evidence."
         }
         switch store.fleetVerdict {
         case .aligned:
@@ -556,7 +549,7 @@ struct DoctorView: View {
                     if assessment.snapshot.machineID != store.localSnapshot?.machineID {
                         IssueBanner(
                             title: "Open Doctor on this Mac",
-                            detail: "This report is read-only here. Device Sync never repairs another Mac remotely.",
+                            detail: "This report is read-only here. FleetMesh never repairs another Mac remotely.",
                             color: DSTheme.purple
                         )
                     }
@@ -618,7 +611,7 @@ struct DoctorView: View {
             Button("Cancel", role: .cancel) { pendingRepair = nil }
         } message: {
             if let finding = pendingRepair, let recipe = finding.recipe {
-                Text("Device Sync will run \(recipe.displayCommand), then re-scan and publish the observed result. The fleet baseline will not change.")
+                Text("FleetMesh will run \(recipe.displayCommand), then re-scan and publish the observed result. The fleet baseline will not change.")
             }
         }
     }
@@ -838,7 +831,7 @@ private struct DoctorFindingRow: View {
                         .lineLimit(1)
                         .textSelection(.enabled)
                     Spacer()
-                    Text("Built into Device Sync")
+                    Text("Built into FleetMesh")
                         .foregroundStyle(DSTheme.inkMuted)
                 }
                 .font(.system(size: 10, design: .monospaced))
@@ -953,7 +946,7 @@ private struct DoctorStaleCard: View {
                 Text("Fresh evidence required")
                     .font(.headline)
                     .foregroundStyle(DSTheme.ink)
-                Text("This report is stale. Open Device Sync on that Mac and scan before choosing or verifying a repair.")
+                Text("This report is stale. Open FleetMesh on that Mac and scan before choosing or verifying a repair.")
                     .font(.caption)
                     .foregroundStyle(DSTheme.inkSoft)
             }
@@ -1102,7 +1095,7 @@ struct SettingsView: View {
                 .deviceCard()
 
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionTitle(title: "Fleet folder", subtitle: "Atomic JSON only — never runtime databases or secrets")
+                    SectionTitle(title: "Fleet authority", subtitle: "Shared atomic JSON — never runtime databases or secrets")
                     Text(store.fleetRootURL?.path ?? "Not configured")
                         .font(.system(size: 12, design: .monospaced))
                         .textSelection(.enabled)
@@ -1115,11 +1108,18 @@ struct SettingsView: View {
                         Button("Reveal in Finder") { store.revealFleetFolder() }
                             .disabled(store.fleetRootURL == nil)
                     }
+                    VStack(alignment: .leading, spacing: 7) {
+                        Label("fleet-manifest.json — in-scope products and desired state", systemImage: "scope")
+                        Label("machines/<machine-id>.json — observed evidence from each Mac", systemImage: "laptopcomputer.and.arrow.down")
+                        Label("local-state.json — this Mac's anonymous ID and fleet pointer", systemImage: "internaldrive")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(DSTheme.inkSoft)
                 }
                 .deviceCard()
 
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionTitle(title: "Desired-state baseline", subtitle: "Reference versions and theme fingerprints for every Mac")
+                    SectionTitle(title: "In-scope manifest", subtitle: "Required products, versions, and theme fingerprints for every Mac")
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(store.manifest == nil ? "No baseline" : "Fleet protocol v\(store.manifest?.schemaVersion ?? 1)")
@@ -1134,6 +1134,9 @@ struct SettingsView: View {
                         }
                         .disabled(store.localSnapshot == nil)
                     }
+                    Text("New Macs must connect OneDrive before FleetMesh's first scan, then read this manifest and publish their own evidence. Do not use a new Mac as baseline unless you intend to replace fleet scope.")
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkSoft)
                 }
                 .deviceCard()
 

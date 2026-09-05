@@ -158,7 +158,7 @@ enum DoctorCatalog {
         ),
         "codex-desktop": DoctorActionDefinition(
             title: "Install the approved Codex Desktop build",
-            detail: "Choose the approved distribution build; Device Sync will verify the signed bundle afterward.",
+            detail: "Choose the approved distribution build; FleetMesh will verify the signed bundle afterward.",
             recipe: nil
         ),
         "codex-cli": DoctorActionDefinition(

@@ -94,4 +94,26 @@ struct BootstrapPlannerTests {
 
         #expect(!plan.contains { $0.componentID == "kiro-crew-themes" })
     }
+
+    @Test
+    func validationPublishesThroughCanonicalFleetMeshBundle() {
+        let snapshot = MachineSnapshot(
+            machineID: "e79c3404-0648-45f0-b565-41cfb22b71b8",
+            name: "Mac",
+            hostName: "mac",
+            modelIdentifier: "Mac17,6",
+            architecture: "arm64",
+            osVersion: "26.6",
+            osBuild: "25G83",
+            components: []
+        )
+        let plan = BootstrapPlanner().plan(
+            for: MachineAssessment(snapshot: snapshot, drifts: [], isStale: false)
+        )
+
+        #expect(
+            plan.first { $0.id == "validation-snapshot" }?.command
+                == "/Applications/FleetMesh.app/Contents/MacOS/DeviceSync --snapshot"
+        )
+    }
 }

@@ -6,7 +6,7 @@
     <string>dev.starkpat.devicesync.snapshot</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Applications/Device Sync.app/Contents/MacOS/DeviceSync</string>
+        <string>/Applications/FleetMesh.app/Contents/MacOS/DeviceSync</string>
         <string>--snapshot</string>
     </array>
     <key>RunAtLoad</key>

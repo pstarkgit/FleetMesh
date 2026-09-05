@@ -80,6 +80,34 @@ struct FleetRepositoryTests {
     }
 
     @Test
+    func fleetForgeRetainsLegacyLocalStateAuthority() {
+        let support = URL(fileURLWithPath: "/tmp/Application Support", isDirectory: true)
+
+        #expect(
+            LocalStateRepository.defaultStateURL(applicationSupportURL: support).path
+                == "/tmp/Application Support/Device Sync/local-state.json"
+        )
+        #expect(FleetMeshIdentity.legacyFleetDirectoryName == "Device Sync")
+    }
+
+    @Test
+    func onlyCanonicalSharedFleetMaySeedAnInitialManifest() {
+        let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+        let shared = LocalStateRepository.canonicalSharedFleetURL(homeURL: home)
+        let sharedState = LocalDeviceState(
+            machineID: UUID().uuidString.lowercased(),
+            fleetRootPath: shared.path
+        )
+        let localState = LocalDeviceState(
+            machineID: UUID().uuidString.lowercased(),
+            fleetRootPath: "/Users/tester/Library/Application Support/Device Sync/Fleet"
+        )
+
+        #expect(LocalStateRepository.maySeedInitialManifest(state: sharedState, homeURL: home))
+        #expect(!LocalStateRepository.maySeedInitialManifest(state: localState, homeURL: home))
+    }
+
+    @Test
     func olderLocalStateWithoutDisplayNameStillDecodes() throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

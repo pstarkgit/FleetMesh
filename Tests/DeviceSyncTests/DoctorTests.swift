@@ -280,6 +280,15 @@ private final class DoctorFixture {
             displayName: "Doctor Test Mac"
         ))
 
+        // Doctor tests need an explicit desired-state authority. Production no
+        // longer seeds a manifest in an arbitrary local fallback folder, so a
+        // temporary test fleet must model the operator's baseline directly.
+        if let baseline = snapshots.first {
+            try FleetRepository(
+                rootURL: root.appendingPathComponent("fleet", isDirectory: true)
+            ).saveManifest(FleetManifest(snapshot: baseline))
+        }
+
         inventory = SequencedInventory(snapshots: snapshots)
         runner = RecordingDoctorRunner()
         store = FleetStore(

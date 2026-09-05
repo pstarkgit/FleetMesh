@@ -27,7 +27,10 @@ struct DriftEngine: Sendable {
                 .map { observation in
                     ComponentDrift(
                         componentID: observation.id,
-                        name: observation.name,
+                        name: ComponentLifecycle.displayName(
+                            for: observation.id,
+                            fallback: observation.name
+                        ),
                         kind: observation.kind,
                         state: .notManaged,
                         severity: .information,
@@ -48,7 +51,10 @@ struct DriftEngine: Sendable {
                 .map { observation in
                 ComponentDrift(
                     componentID: observation.id,
-                    name: observation.name,
+                    name: ComponentLifecycle.displayName(
+                        for: observation.id,
+                        fallback: observation.name
+                    ),
                     kind: observation.kind,
                     state: .unknown,
                     severity: .information,
@@ -70,10 +76,14 @@ struct DriftEngine: Sendable {
         target: ManifestTarget,
         observation: ComponentObservation?
     ) -> ComponentDrift {
+        let displayName = ComponentLifecycle.displayName(
+            for: target.id,
+            fallback: target.name
+        )
         guard let observation else {
             return ComponentDrift(
                 componentID: target.id,
-                name: target.name,
+                name: displayName,
                 kind: target.kind,
                 state: .unknown,
                 severity: target.required ? .critical : .attention,
@@ -87,7 +97,7 @@ struct DriftEngine: Sendable {
         case .missing:
             return ComponentDrift(
                 componentID: target.id,
-                name: target.name,
+                name: displayName,
                 kind: target.kind,
                 state: .missing,
                 severity: target.required ? .critical : .attention,
@@ -98,7 +108,7 @@ struct DriftEngine: Sendable {
         case .unknown:
             return ComponentDrift(
                 componentID: target.id,
-                name: target.name,
+                name: displayName,
                 kind: target.kind,
                 state: .unknown,
                 severity: .attention,
@@ -113,7 +123,7 @@ struct DriftEngine: Sendable {
         if observation.sourceDirty == true {
             return ComponentDrift(
                 componentID: target.id,
-                name: target.name,
+                name: displayName,
                 kind: target.kind,
                 state: .localChanges,
                 severity: .attention,
@@ -128,7 +138,7 @@ struct DriftEngine: Sendable {
            !revisionsMatch(installed, source) {
             return ComponentDrift(
                 componentID: target.id,
-                name: target.name,
+                name: displayName,
                 kind: target.kind,
                 state: .different,
                 severity: .attention,
@@ -157,7 +167,7 @@ struct DriftEngine: Sendable {
             guard let observed = observation.installedRevision else {
                 return ComponentDrift(
                     componentID: target.id,
-                    name: target.name,
+                    name: displayName,
                     kind: target.kind,
                     state: .unknown,
                     severity: .attention,
@@ -181,7 +191,7 @@ struct DriftEngine: Sendable {
             guard let observed = observation.configurationFingerprint else {
                 return ComponentDrift(
                     componentID: target.id,
-                    name: target.name,
+                    name: displayName,
                     kind: target.kind,
                     state: .unknown,
                     severity: .attention,
@@ -215,7 +225,7 @@ struct DriftEngine: Sendable {
 
         return ComponentDrift(
             componentID: target.id,
-            name: target.name,
+            name: displayName,
             kind: target.kind,
             state: .aligned,
             severity: .information,
@@ -231,7 +241,7 @@ struct DriftEngine: Sendable {
     ) -> ComponentDrift {
         ComponentDrift(
             componentID: target.id,
-            name: target.name,
+            name: ComponentLifecycle.displayName(for: target.id, fallback: target.name),
             kind: target.kind,
             state: .unknown,
             severity: .attention,
@@ -250,7 +260,7 @@ struct DriftEngine: Sendable {
     ) -> ComponentDrift {
         ComponentDrift(
             componentID: target.id,
-            name: target.name,
+            name: ComponentLifecycle.displayName(for: target.id, fallback: target.name),
             kind: target.kind,
             state: .different,
             severity: .attention,

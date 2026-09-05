@@ -1,6 +1,6 @@
-# Device Sync
+# FleetMesh
 
-Device Sync is a native macOS fleet dashboard for Patrick's personal tooling.
+FleetMesh is a native macOS fleet dashboard for Patrick's personal tooling.
 It inventories every Mac, compares observed versions and theme fingerprints to
 one explicit baseline, and turns drift into guarded repair or a clear decision.
 
@@ -44,8 +44,8 @@ flowchart LR
     F -->|not proven| I[Still needs attention]
 ```
 
-Repairs are always explicit and local to the Mac running Device Sync. Commands
-come only from Device Sync's built-in catalog; synced JSON never becomes
+Repairs are always explicit and local to the Mac running FleetMesh. Commands
+come only from FleetMesh's built-in catalog; synced JSON never becomes
 executable. Doctor will not overwrite local source work or themes, pull or
 switch an unapproved checkout, repair another Mac remotely, or change the fleet
 baseline. Every attempted repair ends with a new observed snapshot.
@@ -73,15 +73,30 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 
 The default shared folder is
 `~/Library/CloudStorage/OneDrive-amazon.com/Device Sync` when that OneDrive
-root exists. Otherwise Device Sync uses its local Application Support folder.
+root exists. Otherwise FleetMesh uses its local Application Support folder.
 The folder can be changed in the app.
+
+`fleet-manifest.json` in that shared folder is the cross-Mac authority for what
+is in scope and which versions/fingerprints are desired. Each Mac keeps only its
+random machine ID and fleet-folder pointer in
+`~/Library/Application Support/Device Sync/local-state.json`, then publishes
+observed evidence to `machines/<machine-id>.json`. On a new Mac, make OneDrive
+available before FleetMesh's first scan so it reads the existing manifest;
+do not adopt the new Mac as baseline unless you intend to replace desired state.
+
+The `Device Sync` state and fleet folder names are retained as compatibility
+identifiers; changing them would create a second fleet and orphan existing
+machine identity. The bundle ID (`dev.starkpat.devicesync`), executable
+(`DeviceSync`), component ID (`device-sync`), snapshot field
+(`deviceSyncVersion`), LaunchAgent label, and status-item autosave name are
+likewise intentionally stable legacy identifiers.
 
 Headless verification:
 
 ```bash
-/Applications/Device\ Sync.app/Contents/MacOS/DeviceSync --check
-/Applications/Device\ Sync.app/Contents/MacOS/DeviceSync --snapshot
-/Applications/Device\ Sync.app/Contents/MacOS/DeviceSync --adopt-baseline
+/Applications/FleetMesh.app/Contents/MacOS/DeviceSync --check
+/Applications/FleetMesh.app/Contents/MacOS/DeviceSync --snapshot
+/Applications/FleetMesh.app/Contents/MacOS/DeviceSync --adopt-baseline
 ```
 
 The installer registers a per-user LaunchAgent that publishes a snapshot at

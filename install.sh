@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build, sign, and transactionally install Device Sync.app.
+# Build, sign, and transactionally install FleetMesh.app.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -24,18 +24,28 @@ if [ "$CHANGELOG_HEAD" != "$VERSION" ]; then
     exit 1
 fi
 
-FINAL_APP="/Applications/Device Sync.app"
+FINAL_APP="/Applications/FleetMesh.app"
+FORMER_APP="/Applications/FleetForge.app"
+LEGACY_APP="/Applications/Device Sync.app"
 LAUNCH_AGENT="$HOME/Library/LaunchAgents/dev.starkpat.devicesync.snapshot.plist"
-SNAPSHOT_LOG_DIR="$HOME/Library/Logs/Device Sync"
+SNAPSHOT_LOG_DIR="$HOME/Library/Logs/FleetForge"
 STAGE_ROOT="$(mktemp -d "/Applications/.device-sync-install.XXXXXX")"
-STAGE_APP="$STAGE_ROOT/Device Sync.app"
-BACKUP_APP="$STAGE_ROOT/Device Sync.app.previous"
+STAGE_APP="$STAGE_ROOT/FleetMesh.app"
+BACKUP_FINAL_APP="$STAGE_ROOT/FleetMesh.app.previous"
+BACKUP_FORMER_APP="$STAGE_ROOT/FleetForge.app.previous"
+BACKUP_LEGACY_APP="$STAGE_ROOT/Device Sync.app.previous"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
 BUILD_DATE="$(date '+%Y-%m-%d %H:%M')"
 
 cleanup() {
-    if [ ! -d "$FINAL_APP" ] && [ -d "$BACKUP_APP" ]; then
-        mv "$BACKUP_APP" "$FINAL_APP" 2>/dev/null || true
+    if [ ! -d "$FINAL_APP" ] && [ -d "$BACKUP_FINAL_APP" ]; then
+        mv "$BACKUP_FINAL_APP" "$FINAL_APP" 2>/dev/null || true
+    fi
+    if [ ! -d "$FORMER_APP" ] && [ -d "$BACKUP_FORMER_APP" ]; then
+        mv "$BACKUP_FORMER_APP" "$FORMER_APP" 2>/dev/null || true
+    fi
+    if [ ! -d "$LEGACY_APP" ] && [ -d "$BACKUP_LEGACY_APP" ]; then
+        mv "$BACKUP_LEGACY_APP" "$LEGACY_APP" 2>/dev/null || true
     fi
     rm -rf "$STAGE_ROOT"
 }
@@ -68,7 +78,7 @@ stop_device_sync_processes() {
         device_sync_processes_alive || return 0
         sleep 0.2
     done
-    echo "ERROR: Device Sync processes survived termination; refusing to replace the bundle" >&2
+    echo "ERROR: FleetMesh processes survived termination; refusing to replace the bundle" >&2
     return 1
 }
 
@@ -112,20 +122,30 @@ else
 fi
 codesign --verify --deep --strict "$STAGE_APP"
 
-if [ -d "$FINAL_APP" ]; then
+if [ -d "$FINAL_APP" ] || [ -d "$FORMER_APP" ] || [ -d "$LEGACY_APP" ]; then
     stop_device_sync_processes
-    mv "$FINAL_APP" "$BACKUP_APP"
+fi
+if [ -d "$FINAL_APP" ]; then
+    mv "$FINAL_APP" "$BACKUP_FINAL_APP"
+fi
+if [ -d "$FORMER_APP" ]; then
+    mv "$FORMER_APP" "$BACKUP_FORMER_APP"
+fi
+if [ -d "$LEGACY_APP" ]; then
+    mv "$LEGACY_APP" "$BACKUP_LEGACY_APP"
 fi
 
 mv "$STAGE_APP" "$FINAL_APP"
 if ! "$FINAL_APP/Contents/MacOS/DeviceSync" --check; then
     rm -rf "$FINAL_APP"
-    if [ -d "$BACKUP_APP" ]; then mv "$BACKUP_APP" "$FINAL_APP"; fi
-    echo "ERROR: installed Device Sync failed its check; previous app restored" >&2
+    if [ -d "$BACKUP_FINAL_APP" ]; then mv "$BACKUP_FINAL_APP" "$FINAL_APP"; fi
+    if [ -d "$BACKUP_FORMER_APP" ]; then mv "$BACKUP_FORMER_APP" "$FORMER_APP"; fi
+    if [ -d "$BACKUP_LEGACY_APP" ]; then mv "$BACKUP_LEGACY_APP" "$LEGACY_APP"; fi
+    echo "ERROR: installed FleetMesh failed its check; previous app restored" >&2
     exit 1
 fi
 
-rm -rf "$BACKUP_APP"
+rm -rf "$BACKUP_FINAL_APP" "$BACKUP_FORMER_APP" "$BACKUP_LEGACY_APP"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$SNAPSHOT_LOG_DIR"
 SNAPSHOT_STDOUT="$SNAPSHOT_LOG_DIR/snapshot.out.log"
@@ -141,8 +161,8 @@ launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENT"
 open -n "$FINAL_APP"
 sleep 2
 if ! ps -axo ucomm= | awk '{$1=$1} $0 == "DeviceSync" { found=1 } END { exit !found }'; then
-    echo "ERROR: Device Sync did not remain running after launch" >&2
+    echo "ERROR: FleetMesh did not remain running after launch" >&2
     exit 1
 fi
 
-echo "Installed Device Sync $VERSION ($COMMIT) with $SIGNING_LABEL"
+echo "Installed FleetMesh $VERSION ($COMMIT) with $SIGNING_LABEL"
