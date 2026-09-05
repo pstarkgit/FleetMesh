@@ -13,9 +13,12 @@ struct RootView: View {
                 DSTheme.canvas.ignoresSafeArea()
                 switch navigation.section {
                 case .fleet:
-                    FleetView(store: store) {
-                        navigation.open(.doctor)
-                    }
+                    FleetView(
+                        store: store,
+                        onOpenDoctor: { navigation.open(.doctor) },
+                        onOpenBootstrap: { navigation.open(.bootstrap) },
+                        onOpenSettings: { navigation.open(.settings) }
+                    )
                 case .devices:
                     DevicesView(store: store)
                 case .doctor:
@@ -799,6 +802,10 @@ private struct AddDeviceSheet: View {
 struct FleetView: View {
     @Bindable var store: FleetStore
     let onOpenDoctor: () -> Void
+    let onOpenBootstrap: () -> Void
+    let onOpenSettings: () -> Void
+    @State private var joinRole: DeviceRole = .workstation
+    @State private var confirmJoin = false
 
     var body: some View {
         ScrollView {
@@ -810,6 +817,9 @@ struct FleetView: View {
                 ForEach(store.issues) { issue in
                     IssueBanner(title: issue.title, detail: issue.detail, color: DSTheme.orange)
                 }
+                if store.needsFleetConnection || store.localDeviceNeedsEnrollment {
+                    joinThisMacCard
+                }
                 metrics
 
                 if let assessment = store.selectedAssessment {
@@ -820,6 +830,119 @@ struct FleetView: View {
             }
             .padding(28)
         }
+        .confirmationDialog(
+            "Join this Mac to the fleet?",
+            isPresented: $confirmJoin,
+            titleVisibility: .visible
+        ) {
+            Button("Join this Mac") {
+                Task {
+                    await store.joinThisMac(role: joinRole)
+                    if store.localDevice?.status == .enrolled {
+                        onOpenBootstrap()
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("FleetMesh will enroll this Mac as a \(joinRole.label.lowercased()) and apply only compatible fleet defaults. No app will be installed or repaired by joining.")
+        }
+    }
+
+    private var joinThisMacCard: some View {
+        HStack(alignment: .top, spacing: 18) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(DSTheme.auroraFieldGradient.opacity(0.22))
+                Image(systemName: store.needsFleetConnection
+                    ? "externaldrive.badge.questionmark"
+                    : "laptopcomputer.and.arrow.down")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(DSTheme.cyan)
+            }
+            .frame(width: 68, height: 64)
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(store.needsFleetConnection ? "CONNECT AN EXISTING FLEET" : "THIS MAC IS READY TO JOIN")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .tracking(1.2)
+                    .foregroundStyle(DSTheme.cyan)
+                Text(store.needsFleetConnection ? "Find your fleet authority" : "Join this Mac to FleetMesh")
+                    .font(.title2.weight(.bold))
+                Text(joinCardDetail)
+                    .font(.subheadline)
+                    .foregroundStyle(DSTheme.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Label("No baseline replacement", systemImage: "lock.shield.fill")
+                    Label("No automatic installs", systemImage: "hand.raised.fill")
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(DSTheme.inkMuted)
+            }
+
+            Spacer(minLength: 20)
+
+            VStack(alignment: .trailing, spacing: 10) {
+                if store.needsFleetConnection {
+                    if store.detectedExistingFleetURL != nil {
+                        Button {
+                            Task { await store.connectDetectedFleet() }
+                        } label: {
+                            Label("Connect detected fleet", systemImage: "link.badge.plus")
+                                .frame(minWidth: 180)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Button {
+                        Task { await store.chooseExistingFleetFolder() }
+                    } label: {
+                        Label("Choose existing fleet…", systemImage: "folder")
+                            .frame(minWidth: 180)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Create a new fleet instead…") { onOpenSettings() }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkMuted)
+                } else {
+                    Picker("Device role", selection: $joinRole) {
+                        ForEach(DeviceRole.allCases, id: \.self) { role in
+                            Text(role.label).tag(role)
+                        }
+                    }
+                    .frame(width: 190)
+
+                    Button {
+                        confirmJoin = true
+                    } label: {
+                        Label("Join this Mac", systemImage: "plus.circle.fill")
+                            .frame(minWidth: 180)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.isBusy || store.localDevice?.hasFreshEvidence != true)
+                    .accessibilityIdentifier("fleetmesh.joinThisMac")
+                }
+            }
+        }
+        .padding(18)
+        .background(DSTheme.canvas)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(DSTheme.cyan.opacity(0.35), lineWidth: 1)
+        }
+    }
+
+    private var joinCardDetail: String {
+        if store.needsFleetConnection {
+            return "Wait for OneDrive to finish syncing, then connect the folder that already contains fleet-manifest.json. A new Mac never creates or replaces fleet authority during a scan."
+        }
+        let targetCount = store.manifest?.activeTargets.count ?? 0
+        let deviceCount = store.enrolledDevices.count
+        return "Fleet authority is verified. Review this Mac, then enroll it explicitly alongside \(deviceCount) existing device\(deviceCount == 1 ? "" : "s") with \(targetCount) managed default\(targetCount == 1 ? "" : "s")."
     }
 
     private var fleetHeader: some View {
@@ -1085,7 +1208,7 @@ private struct DriftRow: View {
 
                 HStack(spacing: 12) {
                     if let expected = drift.expected {
-                        Label("Target \(expected)", systemImage: "scope")
+                        Label("\(drift.targetBasis.label) \(expected)", systemImage: "scope")
                     }
                     if let observed = drift.observed {
                         Label("Observed \(observed)", systemImage: "eye")

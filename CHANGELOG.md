@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.8 — 2026-09-05
+
+- Added a first-class new-Mac join journey: FleetMesh validates an existing
+  shared manifest, previews this Mac as Pending, requires explicit enrollment,
+  and routes successful joins to Bootstrap without installing or repairing
+  anything automatically.
+- Removed implicit baseline creation from startup, scheduled scans, and
+  headless checks. A partially synced OneDrive folder can no longer make a new
+  Mac replace fleet authority; creating a fleet remains an explicit baseline
+  action.
+- Added read-only repository target evidence from each product's committed
+  version source (`HEAD`, never working-tree content). A fresh, clean installed
+  build on this Mac must prove the same version and revision; synced reports
+  never become target authority.
+- Kept `fleet-manifest.json` as the explicit scope and configuration authority:
+  repository tracking does not rewrite its revision, target list, or theme
+  fingerprints during refresh.
+- Labeled software cards as `Latest repo` when verified repository evidence is
+  available and `Saved baseline` when it is not, so target provenance is visible.
+
 ## 0.1.7 — 2026-09-04
 
 - Added the cross-platform device model for macOS and Linux devices, with

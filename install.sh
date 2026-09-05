@@ -136,7 +136,7 @@ if [ -d "$LEGACY_APP" ]; then
 fi
 
 mv "$STAGE_APP" "$FINAL_APP"
-if ! "$FINAL_APP/Contents/MacOS/DeviceSync" --check; then
+if ! "$FINAL_APP/Contents/MacOS/DeviceSync" --self-check; then
     rm -rf "$FINAL_APP"
     if [ -d "$BACKUP_FINAL_APP" ]; then mv "$BACKUP_FINAL_APP" "$FINAL_APP"; fi
     if [ -d "$BACKUP_FORMER_APP" ]; then mv "$BACKUP_FORMER_APP" "$FORMER_APP"; fi

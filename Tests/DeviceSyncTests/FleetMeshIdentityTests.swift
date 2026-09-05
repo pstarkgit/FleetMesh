@@ -3,6 +3,11 @@ import Testing
 
 struct FleetMeshIdentityTests {
     @Test
+    func selfCheckIsDistinctFromFleetHealthCheck() {
+        #expect(HeadlessOperation(arguments: ["DeviceSync", "--self-check"]) == .selfCheck)
+        #expect(HeadlessOperation(arguments: ["DeviceSync", "--check"]) == .check)
+    }
+    @Test
     func headlessScopeCommandsRequireExplicitComponentIDs() {
         #expect(
             HeadlessOperation(arguments: ["DeviceSync", "--remove-from-scope", "codex-voice"])

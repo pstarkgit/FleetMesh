@@ -7,7 +7,9 @@ import Observation
 final class FleetStore {
     private(set) var localState: LocalDeviceState?
     private(set) var localSnapshot: MachineSnapshot?
+    /// Persisted desired state exactly as read from fleet-manifest.json.
     private(set) var manifest: FleetManifest?
+    private(set) var repositoryTargets: [String: RepositoryBuildTarget] = [:]
     private(set) var devices: [FleetDeviceItem] = []
     private(set) var assessments: [MachineAssessment] = []
     private(set) var issues: [FleetIssue] = []
@@ -20,6 +22,7 @@ final class FleetStore {
     private(set) var lastActionMessage: String?
     private(set) var lastRefreshAt: Date?
     private(set) var checkingRemoteDeviceIDs: Set<String> = []
+    private(set) var detectedExistingFleetURL: URL?
 
     var selectedMachineID: String?
     var searchText = ""
@@ -35,6 +38,7 @@ final class FleetStore {
     private let doctorPlanner: DoctorPlanner
     private let doctorCommandRunner: any DoctorCommandRunning
     private let doctorHomeURL: URL
+    private let fleetAccess: FleetRepositoryAccess
 
     init(
         localRepository: LocalStateRepository = LocalStateRepository(),
@@ -44,7 +48,8 @@ final class FleetStore {
         bootstrapPlanner: BootstrapPlanner = BootstrapPlanner(),
         doctorPlanner: DoctorPlanner = DoctorPlanner(),
         doctorCommandRunner: any DoctorCommandRunning = ProcessDoctorCommandRunner(),
-        doctorHomeURL: URL = FileManager.default.homeDirectoryForCurrentUser
+        doctorHomeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+        fleetAccess: FleetRepositoryAccess = FleetRepositoryAccess()
     ) {
         self.localRepository = localRepository
         self.inventory = inventory
@@ -54,6 +59,7 @@ final class FleetStore {
         self.doctorPlanner = doctorPlanner
         self.doctorCommandRunner = doctorCommandRunner
         self.doctorHomeURL = doctorHomeURL
+        self.fleetAccess = fleetAccess
     }
 
     var fleetRootURL: URL? {
@@ -118,6 +124,17 @@ final class FleetStore {
         guard let selectedMachineID else { return devices.first }
         return devices.first { $0.machineID == selectedMachineID }
     }
+
+    var localDevice: FleetDeviceItem? {
+        guard let machineID = localSnapshot?.machineID else { return nil }
+        return devices.first { $0.machineID == machineID }
+    }
+
+    var localDeviceNeedsEnrollment: Bool {
+        localDevice?.status == .pending && manifest != nil
+    }
+
+    var needsFleetConnection: Bool { manifest == nil }
 
     var enrolledDevices: [FleetDeviceItem] {
         devices.filter { $0.status == .enrolled }
@@ -198,13 +215,13 @@ final class FleetStore {
     }
 
     var fleetVerdict: FleetVerdict {
-        if lastError != nil { return .unknown }
-        if !issues.isEmpty { return .unknown }
-        if !missingEnrolledDevices.isEmpty { return .unknown }
-        if assessments.contains(where: { $0.verdict == .critical }) { return .critical }
-        if assessments.contains(where: { $0.verdict == .attention }) { return .attention }
-        if assessments.isEmpty || manifest == nil { return .unknown }
-        return .aligned
+        FleetHealthEvaluator.verdict(
+            manifest: manifest,
+            assessments: assessments,
+            issueCount: issues.count,
+            missingEnrolledCount: missingEnrolledDevices.count,
+            hasRuntimeError: lastError != nil
+        )
     }
 
     var fleetAttentionCount: Int {
@@ -242,6 +259,7 @@ final class FleetStore {
         } catch {
             lastError = error.localizedDescription
         }
+        await refreshDetectedExistingFleet()
     }
 
     func adoptThisMacAsBaseline() async {
@@ -252,14 +270,31 @@ final class FleetStore {
         defer { isUpdatingScope = false }
         do {
             let newManifest = FleetManifest(snapshot: snapshot)
-            try FleetRepository(rootURL: fleetRootURL).saveManifest(newManifest)
-            await reloadFleet()
+            let read = try await fleetAccess.replaceBaseline(
+                newManifest,
+                snapshot: snapshot,
+                rootURL: fleetRootURL
+            )
+            apply(read: read, currentSnapshot: snapshot)
             lastError = nil
             lastActionMessage = "Fleet baseline replaced with this Mac's fresh observed state."
         } catch {
             lastError = error.localizedDescription
             lastActionMessage = nil
         }
+    }
+
+    func joinThisMac(role: DeviceRole = .workstation) async {
+        guard let machineID = localSnapshot?.machineID else {
+            lastError = FleetStoreError.localSnapshotUnavailable.localizedDescription
+            return
+        }
+        await setDeviceEnrollment(machineID: machineID, enrolled: true, role: role)
+    }
+
+    func connectDetectedFleet() async {
+        guard !isBusy, let url = detectedExistingFleetURL else { return }
+        await connectExistingFleet(at: url)
     }
 
     func setComponentManaged(componentID: String, managed: Bool) async {
@@ -281,20 +316,18 @@ final class FleetStore {
             )
             localSnapshot = snapshot
 
-            let repository = FleetRepository(rootURL: fleetRootURL)
-            _ = try repository.publish(snapshot)
             let updatedManifest = try displayedManifest.settingManaged(
                 componentID: componentID,
                 managed: managed,
                 observation: snapshot.component(componentID),
                 updatedByMachineID: state.machineID
             )
-            try repository.saveManifest(
-                updatedManifest,
-                replacingRevision: displayedManifest.revision
+            let read = try await fleetAccess.publishAndSave(
+                snapshot,
+                manifest: updatedManifest,
+                replacingRevision: displayedManifest.revision,
+                rootURL: fleetRootURL
             )
-
-            let read = repository.load()
             apply(read: read, currentSnapshot: snapshot)
             lastRefreshAt = Date()
             let name = FleetScopeItem(
@@ -353,15 +386,12 @@ final class FleetStore {
                 role: role
             )
             localState = try localRepository.loadOrCreate()
-            try requireManifestForRemoteCheckIn()
-            try migrateLegacyManifestBeforeNewDevice()
+            try await requireManifestForRemoteCheckIn()
             localState = try localRepository.addingRemoteDevice(connection)
             selectedMachineID = connection.machineID
             let snapshot = try await remoteInventory.capture(connection: connection)
             guard let fleetRootURL else { return }
-            let repository = FleetRepository(rootURL: fleetRootURL)
-            _ = try repository.publish(snapshot)
-            let read = repository.load()
+            let read = try await fleetAccess.publish(snapshot, rootURL: fleetRootURL)
             apply(read: read, currentSnapshot: try currentLocalSnapshot())
             selectedMachineID = connection.machineID
             lastActionMessage = "\(connection.displayName) checked in and is Pending. Review its evidence, then add it to the fleet."
@@ -384,12 +414,10 @@ final class FleetStore {
         defer { checkingRemoteDeviceIDs.remove(machineID) }
 
         do {
-            try requireManifestForRemoteCheckIn()
-            try migrateLegacyManifestBeforeNewDevice()
+            try await requireManifestForRemoteCheckIn()
             let snapshot = try await remoteInventory.capture(connection: connection)
-            let repository = FleetRepository(rootURL: fleetRootURL)
-            _ = try repository.publish(snapshot)
-            apply(read: repository.load(), currentSnapshot: try currentLocalSnapshot())
+            let read = try await fleetAccess.publish(snapshot, rootURL: fleetRootURL)
+            apply(read: read, currentSnapshot: try currentLocalSnapshot())
             selectedMachineID = machineID
             lastActionMessage = "\(connection.displayName) published fresh redacted evidence."
         } catch {
@@ -416,6 +444,7 @@ final class FleetStore {
 
         do {
             let state = try localRepository.loadOrCreate()
+            let currentSnapshot = try currentLocalSnapshot()
             let snapshots = Array(knownSnapshots.values)
             let updated: FleetManifest
             if let snapshot = device.snapshot {
@@ -434,18 +463,38 @@ final class FleetStore {
                     updatedByMachineID: state.machineID
                 )
             }
-            let repository = FleetRepository(rootURL: fleetRootURL)
-            try repository.saveManifest(
-                updated,
-                replacingRevision: displayedManifest.revision
-            )
-            if device.localConnection != nil {
-                localState = try localRepository.updatingRemoteDeviceRole(
+            var localStateToRestore: LocalDeviceState?
+            if let connection = device.localConnection, connection.role != role {
+                let changedState = try localRepository.updatingRemoteDeviceRole(
                     machineID: machineID,
                     role: role
                 )
+                localStateToRestore = state
+                localState = changedState
             }
-            apply(read: repository.load(), currentSnapshot: try currentLocalSnapshot())
+
+            let read: FleetReadResult
+            do {
+                read = try await fleetAccess.save(
+                    updated,
+                    replacingRevision: displayedManifest.revision,
+                    rootURL: fleetRootURL
+                )
+            } catch {
+                if let localStateToRestore {
+                    do {
+                        try localRepository.save(localStateToRestore)
+                        localState = localStateToRestore
+                    } catch let rollbackError {
+                        throw FleetStoreError.localRoleRollbackFailed(
+                            change: error.localizedDescription,
+                            rollback: rollbackError.localizedDescription
+                        )
+                    }
+                }
+                throw error
+            }
+            apply(read: read, currentSnapshot: currentSnapshot)
             selectedMachineID = machineID
             lastActionMessage = enrolled
                 ? "\(device.name) is now in the fleet. Its applicable defaults now drive drift."
@@ -511,12 +560,12 @@ final class FleetStore {
                 knownSnapshots: Array(knownSnapshots.values),
                 updatedByMachineID: state.machineID
             )
-            let repository = FleetRepository(rootURL: fleetRootURL)
-            try repository.saveManifest(
+            let read = try await fleetAccess.save(
                 updated,
-                replacingRevision: displayedManifest.revision
+                replacingRevision: displayedManifest.revision,
+                rootURL: fleetRootURL
             )
-            apply(read: repository.load(), currentSnapshot: try currentLocalSnapshot())
+            apply(read: read, currentSnapshot: try currentLocalSnapshot())
             selectedMachineID = machineID
             let name = updated.target(componentID)?.name ?? componentID
             lastActionMessage = "\(name) now uses ‘\(selection.label)’ on \(snapshot.name). No repair command ran."
@@ -547,6 +596,53 @@ final class FleetStore {
         }
     }
 
+    func chooseExistingFleetFolder() async {
+        guard !isBusy else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Choose Existing FleetMesh Fleet Folder"
+        panel.message = "Select the folder that contains fleet-manifest.json. FleetMesh will not create or replace a baseline while joining."
+        panel.prompt = "Connect Fleet"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        await connectExistingFleet(at: url)
+    }
+
+    private func connectExistingFleet(at url: URL) async {
+        guard !isBusy else { return }
+        isUpdatingScope = true
+        lastError = nil
+        lastActionMessage = nil
+        defer { isUpdatingScope = false }
+
+        let validation = await fleetAccess.loadManifest(rootURL: url)
+        guard validation.manifest != nil else {
+            lastError = validation.issue?.detail
+                ?? "The selected folder does not contain a readable fleet-manifest.json. Wait for sync to finish or choose the existing shared fleet folder."
+            lastActionMessage = nil
+            return
+        }
+        do {
+            let snapshot = try currentLocalSnapshot()
+            let (read, connectedState) = try await fleetAccess.connect(
+                snapshot: snapshot,
+                rootURL: url,
+                persistLocalRoot: { [localRepository] root in
+                    try localRepository.updatingFleetRoot(root)
+                }
+            )
+            localState = connectedState
+            apply(read: read, currentSnapshot: snapshot)
+            lastActionMessage = "Connected to the existing fleet. Review this Mac, then choose Join this Mac."
+        } catch {
+            lastError = error.localizedDescription
+            lastActionMessage = nil
+        }
+        await refreshDetectedExistingFleet()
+    }
+
     func revealFleetFolder() {
         guard let fleetRootURL else { return }
         NSWorkspace.shared.open(fleetRootURL)
@@ -571,7 +667,11 @@ final class FleetStore {
     }
 
     func doctorFindings(for assessment: MachineAssessment) -> [DoctorFinding] {
-        doctorPlanner.findings(for: assessment, manifest: manifest)
+        doctorPlanner.findings(
+            for: assessment,
+            manifest: manifest,
+            repositoryTargets: repositoryTargets
+        )
     }
 
     func doctorRun(for componentID: String) -> DoctorRunRecord? {
@@ -629,7 +729,30 @@ final class FleetStore {
                 return
             }
 
-            let assessment = driftEngine.assess(snapshot: preflight, manifest: manifest)
+            guard let approvedManifest = manifest else {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: originalName,
+                    outcome: .protected,
+                    summary: "The fleet manifest was unavailable after preflight. No repair command ran.",
+                    output: nil,
+                    startedAt: startedAt
+                )
+                return
+            }
+            let approvedRepositoryTargets = repositoryTargets
+            let approvedTarget = approvedManifest.target(componentID).map {
+                ResolvedFleetTarget(
+                    baseline: $0,
+                    repositoryBuild: approvedRepositoryTargets[componentID]
+                )
+            }
+
+            let assessment = driftEngine.assess(
+                snapshot: preflight,
+                manifest: approvedManifest,
+                repositoryTargets: approvedRepositoryTargets
+            )
             guard let drift = assessment.drifts.first(where: { $0.componentID == componentID }) else {
                 finishDoctorRun(
                     componentID: componentID,
@@ -657,7 +780,7 @@ final class FleetStore {
             let finding = doctorPlanner.finding(
                 for: drift,
                 observation: preflight.component(componentID),
-                target: manifest?.target(componentID)
+                resolvedTarget: approvedTarget
             )
             guard finding.canRepair, let recipe = finding.recipe else {
                 finishDoctorRun(
@@ -714,6 +837,43 @@ final class FleetStore {
                 }
             }
 
+            // Pin the authority and checkout state immediately before execution.
+            // The installer may run for minutes; postflight is still evaluated
+            // against these approved values, never mutable store state.
+            guard let fleetRootURL else {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: .protected,
+                    summary: "The fleet folder became unavailable before execution. No repair command ran.",
+                    output: nil,
+                    startedAt: startedAt
+                )
+                return
+            }
+            let executionPreflight = await inventory.capture(
+                machineID: state.machineID,
+                displayName: state.displayName
+            )
+            let executionManifest = await fleetAccess.loadManifest(rootURL: fleetRootURL).manifest
+            guard executionManifest?.revision == approvedManifest.revision,
+                  executionPreflight.machineID == targetMachineID,
+                  DoctorApproval.matchesPinnedSource(
+                    approved: preflight.component(componentID),
+                    current: executionPreflight.component(componentID),
+                    requiresCleanSource: recipe.requiresCleanSource
+                  ) else {
+                finishDoctorRun(
+                    componentID: componentID,
+                    componentName: drift.name,
+                    outcome: .protected,
+                    summary: "Fleet authority or source state changed after preflight. No repair command ran; scan and review again.",
+                    output: nil,
+                    startedAt: startedAt
+                )
+                return
+            }
+
             doctorRuns[componentID] = DoctorRunRecord(
                 componentID: componentID,
                 componentName: drift.name,
@@ -740,7 +900,11 @@ final class FleetStore {
                 return
             }
 
-            let postAssessment = driftEngine.assess(snapshot: postflight, manifest: manifest)
+            let postAssessment = driftEngine.assess(
+                snapshot: postflight,
+                manifest: approvedManifest,
+                repositoryTargets: approvedRepositoryTargets
+            )
             let postDrift = postAssessment.drifts.first { $0.componentID == componentID }
             if commandResult.timedOut {
                 finishDoctorRun(
@@ -807,7 +971,9 @@ final class FleetStore {
 
     private func reloadFleet() async {
         guard let fleetRootURL, let localSnapshot else { return }
-        let read = FleetRepository(rootURL: fleetRootURL).load()
+        let read = await Task.detached(priority: .utility) {
+            FleetRepository(rootURL: fleetRootURL).load()
+        }.value
         apply(read: read, currentSnapshot: localSnapshot)
     }
 
@@ -818,36 +984,13 @@ final class FleetStore {
         return localSnapshot
     }
 
-    private func migrateLegacyManifestBeforeNewDevice() throws {
-        guard let fleetRootURL else { return }
-        let repository = FleetRepository(rootURL: fleetRootURL)
-        let read = repository.load()
-        guard let current = read.manifest, current.needsDevicePolicyMigration else { return }
-        let state = try localRepository.loadOrCreate()
-        var snapshots = read.machines
-        if let localSnapshot, !snapshots.contains(where: {
-            $0.machineID == localSnapshot.machineID
-        }) {
-            snapshots.append(localSnapshot)
-        }
-        let migrated = current.migratingLegacyDevices(
-            snapshots,
-            updatedByMachineID: state.machineID,
-            updatedAt: Date(),
-            preserveRevision: false
-        )
-        try repository.saveManifest(migrated, replacingRevision: current.revision)
-        manifest = migrated
-    }
-
-    private func requireManifestForRemoteCheckIn() throws {
+    private func requireManifestForRemoteCheckIn() async throws {
         guard let fleetRootURL else {
             throw FleetStoreError.missingManifestForRemoteCheckIn
         }
-        let repository = FleetRepository(rootURL: fleetRootURL)
-        let read = repository.load()
+        let read = await fleetAccess.loadManifest(rootURL: fleetRootURL)
         guard read.manifest != nil else {
-            throw repository.manifestExists
+            throw read.issue != nil
                 ? FleetStoreError.unreadableManifestForRemoteCheckIn
                 : FleetStoreError.missingManifestForRemoteCheckIn
         }
@@ -859,7 +1002,7 @@ final class FleetStore {
         return try await scanAndPublish()
     }
 
-    private func scanAndPublish() async throws -> MachineSnapshot {
+    private func scanAndPublish(requireManifest: Bool = false) async throws -> MachineSnapshot {
         let state = try localRepository.loadOrCreate()
         localState = state
         let snapshot = await inventory.capture(
@@ -868,40 +1011,47 @@ final class FleetStore {
         )
         localSnapshot = snapshot
 
-        let repository = FleetRepository(
-            rootURL: URL(fileURLWithPath: state.fleetRootPath, isDirectory: true)
-        )
-        _ = try repository.publish(snapshot)
-
-        var read = repository.load()
-        if read.manifest == nil
-            && !repository.manifestExists
-            && LocalStateRepository.maySeedInitialManifest(
-                state: state,
-                homeURL: localRepository.homeURL
-            ) {
-            let seeded = FleetManifest(snapshot: snapshot)
-            try repository.saveManifest(seeded)
-            read = repository.load()
-        }
-
-        if let current = read.manifest, current.needsDevicePolicyMigration {
-            let migrated = current.migratingLegacyDevices(
-                read.machines,
-                updatedByMachineID: state.machineID,
-                updatedAt: Date(),
-                preserveRevision: false
+        let fleetRoot = URL(fileURLWithPath: state.fleetRootPath, isDirectory: true)
+        let read = try await Task.detached(priority: .utility) {
+            let repository = FleetRepository(rootURL: fleetRoot)
+            let manifestRead = repository.loadManifest()
+            var result = FleetReadResult(
+                manifest: manifestRead.manifest,
+                machines: [],
+                issues: manifestRead.issue.map { [$0] } ?? []
             )
-            try repository.saveManifest(
-                migrated,
-                replacingRevision: current.revision
-            )
-            read = repository.load()
-        }
+            // Missing authority can mean OneDrive has not downloaded the
+            // manifest yet. Inventory locally, but publish only after an
+            // existing manifest is readable.
+            if result.manifest != nil {
+                _ = try repository.publish(snapshot)
+                result = repository.load()
+            } else if requireManifest {
+                throw manifestRead.issue == nil
+                    ? FleetStoreError.missingManifestForRemoteCheckIn
+                    : FleetStoreError.unreadableManifestForRemoteCheckIn
+            }
+
+            return result
+        }.value
 
         apply(read: read, currentSnapshot: snapshot)
         lastRefreshAt = Date()
         return snapshot
+    }
+
+    private func refreshDetectedExistingFleet() async {
+        let canonical = LocalStateRepository.canonicalSharedFleetURL(
+            homeURL: localRepository.homeURL
+        )
+        guard canonical.standardizedFileURL != fleetRootURL?.standardizedFileURL else {
+            detectedExistingFleetURL = nil
+            return
+        }
+        let manifest = await Task.detached(priority: .utility) {
+            FleetRepository(rootURL: canonical).loadManifest().manifest
+        }.value
+        detectedExistingFleetURL = manifest == nil ? nil : canonical
     }
 
     private func finishDoctorRun(
@@ -933,6 +1083,15 @@ final class FleetStore {
         knownSnapshots = [:]
         for machine in machines {
             knownSnapshots[machine.machineID] = machine
+        }
+
+        if let persistedManifest = read.manifest {
+            repositoryTargets = RepositoryTargetResolver().resolve(
+                manifest: persistedManifest,
+                localSnapshot: currentSnapshot
+            )
+        } else {
+            repositoryTargets = [:]
         }
 
         var resolvedIssues = read.issues
@@ -983,12 +1142,25 @@ final class FleetStore {
         }
         assessments = devices.compactMap { device in
             guard device.status == .enrolled, let snapshot = device.snapshot else { return nil }
-            return driftEngine.assess(snapshot: snapshot, manifest: read.manifest)
+            return driftEngine.assess(
+                snapshot: snapshot,
+                manifest: read.manifest,
+                repositoryTargets: repositoryTargets
+            )
         }
 
         if selectedMachineID == nil
             || !devices.contains(where: { $0.machineID == selectedMachineID }) {
             selectedMachineID = currentSnapshot.machineID
+        }
+    }
+
+    private func resolvedTarget(_ componentID: String) -> ResolvedFleetTarget? {
+        manifest?.target(componentID).map {
+            ResolvedFleetTarget(
+                baseline: $0,
+                repositoryBuild: repositoryTargets[componentID]
+            )
         }
     }
 }
@@ -1000,6 +1172,8 @@ private enum FleetStoreError: LocalizedError {
     case pendingDeviceRoleRequiresEnrollment(String)
     case managedComponentCannotBeHidden(String)
     case unknownCatalogComponent(String)
+    case fleetConnectionLost
+    case localRoleRollbackFailed(change: String, rollback: String)
 
     var errorDescription: String? {
         switch self {
@@ -1015,6 +1189,10 @@ private enum FleetStoreError: LocalizedError {
             "Remove \(name) from fleet scope before hiding it from this Mac's Available list."
         case .unknownCatalogComponent(let componentID):
             "\(componentID) is no longer present in the FleetMesh catalog."
+        case .fleetConnectionLost:
+            "The fleet manifest changed or disappeared while connecting. FleetMesh restored the previous fleet folder; wait for sync to finish and try again."
+        case .localRoleRollbackFailed(let change, let rollback):
+            "The fleet policy change failed (\(change)), and FleetMesh could not restore the controller's previous device role (\(rollback)). Reopen FleetMesh and reconcile the role before checking in this device again."
         }
     }
 }

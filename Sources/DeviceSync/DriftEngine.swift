@@ -10,6 +10,7 @@ struct DriftEngine: Sendable {
     func assess(
         snapshot: MachineSnapshot,
         manifest: FleetManifest?,
+        repositoryTargets: [String: RepositoryBuildTarget] = [:],
         now: Date = Date()
     ) -> MachineAssessment {
         let drifts: [ComponentDrift]
@@ -18,7 +19,11 @@ struct DriftEngine: Sendable {
             let activeObservations = snapshot.components.filter {
                 ComponentLifecycle.isActive($0.id)
             }
-            let targetDrifts = activeTargets.map { target in
+            let targetDrifts = activeTargets.map { baseline in
+                let target = ResolvedFleetTarget(
+                    baseline: baseline,
+                    repositoryBuild: repositoryTargets[baseline.id]
+                )
                 let applicability = target.applicability(to: snapshot)
                 guard applicability.isApplicable else {
                     return ComponentDrift(
@@ -32,7 +37,8 @@ struct DriftEngine: Sendable {
                         severity: .information,
                         summary: applicability.reason,
                         expected: nil,
-                        observed: snapshot.component(target.id).flatMap(observedSummary)
+                        observed: snapshot.component(target.id).flatMap(observedSummary),
+                        targetBasis: target.basis
                     )
                 }
                 return assess(target: target, observation: snapshot.component(target.id))
@@ -89,7 +95,7 @@ struct DriftEngine: Sendable {
     }
 
     private func assess(
-        target: ManifestTarget,
+        target: ResolvedFleetTarget,
         observation: ComponentObservation?
     ) -> ComponentDrift {
         let displayName = ComponentLifecycle.displayName(
@@ -105,7 +111,8 @@ struct DriftEngine: Sendable {
                 severity: target.required ? .critical : .attention,
                 summary: "This machine did not report the component.",
                 expected: expectedSummary(target),
-                observed: nil
+                observed: nil,
+                targetBasis: target.basis
             )
         }
 
@@ -119,7 +126,8 @@ struct DriftEngine: Sendable {
                 severity: target.required ? .critical : .attention,
                 summary: "Required component is not installed or configured.",
                 expected: expectedSummary(target),
-                observed: "Missing"
+                observed: "Missing",
+                targetBasis: target.basis
             )
         case .unknown:
             return ComponentDrift(
@@ -130,7 +138,8 @@ struct DriftEngine: Sendable {
                 severity: .attention,
                 summary: "The probe could not verify current state.",
                 expected: expectedSummary(target),
-                observed: "Unknown"
+                observed: "Unknown",
+                targetBasis: target.basis
             )
         case .installed:
             break
@@ -145,22 +154,8 @@ struct DriftEngine: Sendable {
                 severity: .attention,
                 summary: "Source checkout has local work; convergence is intentionally blocked.",
                 expected: expectedSummary(target),
-                observed: observedSummary(observation)
-            )
-        }
-
-        if let installed = observation.installedRevision,
-           let source = observation.sourceRevision,
-           !revisionsMatch(installed, source) {
-            return ComponentDrift(
-                componentID: target.id,
-                name: displayName,
-                kind: target.kind,
-                state: .different,
-                severity: .attention,
-                summary: "Installed build and source checkout are different revisions; deployment state is not converged.",
-                expected: "Installed \(installed)",
-                observed: "Source \(source)"
+                observed: observedSummary(observation),
+                targetBasis: target.basis
             )
         }
 
@@ -168,15 +163,33 @@ struct DriftEngine: Sendable {
             guard let observed = observation.installedVersion else {
                 return unknownVersion(target: target, observation: observation)
             }
-            if expected != observed {
+            if !VersionIdentity.matches(expected, observed) {
                 return mismatch(
                     target: target,
                     observation: observation,
-                    summary: "Installed version differs from the fleet baseline.",
+                    summary: target.basis == .latestRepository
+                        ? "Installed version differs from the latest verified repository build."
+                        : "Installed version differs from the saved fleet baseline.",
                     expected: expected,
                     observed: observed
                 )
             }
+        }
+
+        if let installed = observation.installedRevision,
+           let source = observation.sourceRevision,
+           !RevisionIdentity.matches(installed, source) {
+            return ComponentDrift(
+                componentID: target.id,
+                name: displayName,
+                kind: target.kind,
+                state: .different,
+                severity: .attention,
+                summary: "Installed build and source checkout are different revisions; deployment state is not converged.",
+                expected: target.expectedVersion ?? "Source \(source)",
+                observed: observation.installedVersion ?? "Installed \(installed)",
+                targetBasis: target.basis
+            )
         }
 
         if let expected = target.expectedInstalledRevision {
@@ -189,10 +202,11 @@ struct DriftEngine: Sendable {
                     severity: .attention,
                     summary: "The baseline has an installed revision, but this build does not expose one.",
                     expected: expected,
-                    observed: observation.installedVersion
+                    observed: observation.installedVersion,
+                    targetBasis: target.basis
                 )
             }
-            if !revisionsMatch(expected, observed) {
+            if !RevisionIdentity.matches(expected, observed) {
                 return mismatch(
                     target: target,
                     observation: observation,
@@ -213,7 +227,8 @@ struct DriftEngine: Sendable {
                     severity: .attention,
                     summary: "Configuration fingerprint is unavailable.",
                     expected: shortFingerprint(expected),
-                    observed: nil
+                    observed: nil,
+                    targetBasis: target.basis
                 )
             }
             if expected != observed {
@@ -229,7 +244,7 @@ struct DriftEngine: Sendable {
 
         if let expected = target.expectedSourceRevision,
            let observed = observation.sourceRevision,
-           !revisionsMatch(expected, observed) {
+           !RevisionIdentity.matches(expected, observed) {
             return mismatch(
                 target: target,
                 observation: observation,
@@ -245,14 +260,17 @@ struct DriftEngine: Sendable {
             kind: target.kind,
             state: .aligned,
             severity: .information,
-            summary: "Observed state matches the fleet baseline.",
+            summary: target.basis == .latestRepository
+                ? "Observed state matches the latest verified repository build."
+                : "Observed state matches the saved fleet baseline.",
             expected: expectedSummary(target),
-            observed: observedSummary(observation)
+            observed: observedSummary(observation),
+            targetBasis: target.basis
         )
     }
 
     private func unknownVersion(
-        target: ManifestTarget,
+        target: ResolvedFleetTarget,
         observation: ComponentObservation
     ) -> ComponentDrift {
         ComponentDrift(
@@ -263,12 +281,13 @@ struct DriftEngine: Sendable {
             severity: .attention,
             summary: "Installed version could not be read.",
             expected: target.expectedVersion,
-            observed: observedSummary(observation)
+            observed: observedSummary(observation),
+            targetBasis: target.basis
         )
     }
 
     private func mismatch(
-        target: ManifestTarget,
+        target: ResolvedFleetTarget,
         observation: ComponentObservation,
         summary: String,
         expected: String,
@@ -282,11 +301,12 @@ struct DriftEngine: Sendable {
             severity: .attention,
             summary: summary,
             expected: expected,
-            observed: observed
+            observed: observed,
+            targetBasis: target.basis
         )
     }
 
-    private func expectedSummary(_ target: ManifestTarget) -> String? {
+    private func expectedSummary(_ target: ResolvedFleetTarget) -> String? {
         target.expectedVersion
             ?? target.expectedInstalledRevision
             ?? target.expectedSourceRevision
@@ -298,10 +318,6 @@ struct DriftEngine: Sendable {
             ?? observation.installedRevision
             ?? observation.sourceRevision
             ?? observation.configurationFingerprint.map(shortFingerprint)
-    }
-
-    private func revisionsMatch(_ lhs: String, _ rhs: String) -> Bool {
-        lhs == rhs || lhs.hasPrefix(rhs) || rhs.hasPrefix(lhs)
     }
 
     private func shortFingerprint(_ value: String) -> String {

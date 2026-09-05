@@ -4,6 +4,101 @@ import Testing
 
 struct FleetRepositoryTests {
     @Test
+    func processRunnerDrainsOutputWhileChildIsRunning() async throws {
+        let result = await ProcessCommandRunner().run(
+            executable: URL(fileURLWithPath: "/usr/bin/yes"),
+            arguments: [String(repeating: "x", count: 256)],
+            environment: nil,
+            timeout: 0.2
+        )
+
+        #expect(result.timedOut)
+        #expect(result.standardOutput.utf8.count > 16_384)
+        #expect(result.standardOutput.utf8.count <= 1_048_576)
+    }
+
+    @Test
+    func processRunnerReturnsWhenExecutableCannotLaunch() async {
+        let result = await ProcessCommandRunner().run(
+            executable: URL(fileURLWithPath: "/definitely/not/a/fleetmesh-command"),
+            arguments: [],
+            environment: nil,
+            timeout: 0.2
+        )
+
+        #expect(result.exitCode == -1)
+        #expect(!result.timedOut)
+        #expect(!result.standardError.isEmpty)
+    }
+
+    @Test
+    func connectPublishesOnlyAgainstPinnedManifestRevision() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = repositoryFixtureSnapshot()
+        let repository = FleetRepository(rootURL: root)
+        let manifest = FleetManifest(snapshot: snapshot)
+        try repository.saveManifest(manifest)
+
+        let (read, localState) = try await FleetRepositoryAccess().connect(
+            snapshot: snapshot,
+            rootURL: root,
+            persistLocalRoot: { root in
+                LocalDeviceState(machineID: snapshot.machineID, fleetRootPath: root.path)
+            }
+        )
+
+        #expect(read.manifest?.revision == manifest.revision)
+        #expect(read.machines.map(\.machineID) == [snapshot.machineID])
+        #expect(localState.fleetRootPath == root.path)
+    }
+
+    @Test
+    func connectRestoresPriorReportWhenLocalPointerCannotPersist() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = repositoryFixtureSnapshot(name: "Old report")
+        let fresh = repositoryFixtureSnapshot(name: "Fresh report")
+        let repository = FleetRepository(rootURL: root)
+        try repository.saveManifest(FleetManifest(snapshot: old))
+        _ = try repository.publish(old)
+
+        await #expect(throws: TestConnectError.self) {
+            _ = try await FleetRepositoryAccess().connect(
+                snapshot: fresh,
+                rootURL: root,
+                persistLocalRoot: { _ in throw TestConnectError.pointerWriteFailed }
+            )
+        }
+
+        #expect(repository.load().machines.first?.name == "Old report")
+    }
+
+    @Test
+    func connectRollbackDoesNotOverwriteConcurrentFreshReport() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = repositoryFixtureSnapshot(name: "Old report")
+        let connecting = repositoryFixtureSnapshot(name: "Connecting report")
+        let concurrent = repositoryFixtureSnapshot(name: "Concurrent report")
+        let repository = FleetRepository(rootURL: root)
+        try repository.saveManifest(FleetManifest(snapshot: old))
+        _ = try repository.publish(old)
+
+        await #expect(throws: TestConnectError.self) {
+            _ = try await FleetRepositoryAccess().connect(
+                snapshot: connecting,
+                rootURL: root,
+                persistLocalRoot: { _ in
+                    _ = try repository.publish(concurrent)
+                    throw TestConnectError.pointerWriteFailed
+                }
+            )
+        }
+
+        #expect(repository.load().machines.first?.name == "Concurrent report")
+    }
+    @Test
     func oneComponentCanLeaveAndRejoinFleetScopeWithoutChangingOthers() throws {
         let authBar = ComponentObservation(
             id: "authbar",
@@ -92,6 +187,84 @@ struct FleetRepositoryTests {
             try repository.saveManifest(first, replacingRevision: first.revision)
         }
         #expect(repository.load().manifest?.revision == second.revision)
+    }
+
+    @Test
+    func concurrentChildrenOfOneRevisionFailClosedAfterCloudMerge() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = FleetRepository(rootURL: root)
+        let snapshot = repositoryFixtureSnapshot()
+        let parent = FleetManifest(snapshot: snapshot)
+        try repository.saveManifest(parent)
+        let firstChild = try parent.settingManaged(
+            componentID: "codex-themes",
+            managed: false,
+            observation: snapshot.component("codex-themes"),
+            updatedByMachineID: snapshot.machineID
+        )
+        try repository.saveManifest(firstChild, replacingRevision: parent.revision)
+
+        // Simulate OneDrive merging an independently-created sibling revision
+        // record from another Mac after both had read the same parent.
+        let sibling = "11f61618-c556-438c-a2af-101ca6cedae9"
+        let siblingManifestData = try FleetJSON.encoder.encode(firstChild)
+        var siblingManifest = try #require(
+            JSONSerialization.jsonObject(with: siblingManifestData) as? [String: Any]
+        )
+        siblingManifest["revision"] = sibling
+        siblingManifest["updatedByMachineID"] = "44f61618-c556-438c-a2af-101ca6cedae9"
+        let siblingJSON: [String: Any] = [
+            "parentRevision": parent.revision,
+            "manifest": siblingManifest,
+        ]
+        try JSONSerialization.data(
+            withJSONObject: siblingJSON,
+            options: [.prettyPrinted, .sortedKeys]
+        ).write(
+            to: repository.manifestRevisionsURL
+                .appendingPathComponent(sibling)
+                .appendingPathExtension("json"),
+            options: .atomic
+        )
+
+        let read = repository.loadManifest()
+
+        #expect(read.manifest == nil)
+        #expect(read.issue?.title == "Fleet policy has conflicting revisions")
+        #expect(read.issue?.detail.contains(firstChild.revision) == true)
+
+        let replacementSnapshot = repositoryFixtureSnapshot(name: "Chosen baseline")
+        let replacement = FleetManifest(snapshot: replacementSnapshot)
+        try repository.saveManifest(replacement)
+        #expect(repository.loadManifest().manifest?.revision == replacement.revision)
+        #expect(repository.loadManifest().issue == nil)
+    }
+
+    @Test
+    func revisionRecordArrivingBeforeManifestPointerFailsClosed() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = FleetRepository(rootURL: root)
+        let snapshot = repositoryFixtureSnapshot()
+        let parent = FleetManifest(snapshot: snapshot)
+        try repository.saveManifest(parent)
+        let child = try parent.settingManaged(
+            componentID: "codex-themes",
+            managed: false,
+            observation: snapshot.component("codex-themes"),
+            updatedByMachineID: snapshot.machineID
+        )
+        try repository.saveManifest(child, replacingRevision: parent.revision)
+        try FleetJSON.encoder.encode(parent).write(
+            to: repository.manifestURL,
+            options: .atomic
+        )
+
+        let read = repository.loadManifest()
+
+        #expect(read.manifest == nil)
+        #expect(read.issue?.title == "Fleet policy is waiting for cloud convergence")
     }
     @Test
     func malformedMachineDoesNotHideValidMachine() throws {
@@ -277,20 +450,14 @@ struct FleetRepositoryTests {
     }
 
     @Test
-    func onlyCanonicalSharedFleetMaySeedAnInitialManifest() {
+    func canonicalSharedFleetPathRemainsStableWithoutGrantingSeedAuthority() {
         let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
         let shared = LocalStateRepository.canonicalSharedFleetURL(homeURL: home)
-        let sharedState = LocalDeviceState(
-            machineID: UUID().uuidString.lowercased(),
-            fleetRootPath: shared.path
-        )
-        let localState = LocalDeviceState(
-            machineID: UUID().uuidString.lowercased(),
-            fleetRootPath: "/Users/tester/Library/Application Support/Device Sync/Fleet"
-        )
 
-        #expect(LocalStateRepository.maySeedInitialManifest(state: sharedState, homeURL: home))
-        #expect(!LocalStateRepository.maySeedInitialManifest(state: localState, homeURL: home))
+        #expect(
+            shared.path
+                == "/Users/tester/Library/CloudStorage/OneDrive-amazon.com/Device Sync"
+        )
     }
 
     @Test
@@ -334,6 +501,10 @@ struct FleetRepositoryTests {
         #expect(restored.hiddenComponents.isEmpty)
         #expect(try repository.loadOrCreate().hiddenComponents.isEmpty)
     }
+}
+
+private enum TestConnectError: Error {
+    case pointerWriteFailed
 }
 
 struct FleetScopeOrchestrationTests {

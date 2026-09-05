@@ -6,6 +6,40 @@ private let doctorFixtureMachineID = "11111111-1111-4111-8111-111111111111"
 
 struct DoctorPlannerTests {
     @Test
+    func pinnedDoctorApprovalRejectsChangedOrDirtySource() {
+        let approved = authBarObservation(
+            installedRevision: "bbbbbbb",
+            sourceRevision: "bbbbbbbbbbbb",
+            dirty: false
+        )
+        let changed = authBarObservation(
+            installedRevision: "bbbbbbb",
+            sourceRevision: "cccccccccccc",
+            dirty: false
+        )
+        let dirty = authBarObservation(
+            installedRevision: "bbbbbbb",
+            sourceRevision: "bbbbbbbbbbbb",
+            dirty: true
+        )
+
+        #expect(DoctorApproval.matchesPinnedSource(
+            approved: approved,
+            current: approved,
+            requiresCleanSource: true
+        ))
+        #expect(!DoctorApproval.matchesPinnedSource(
+            approved: approved,
+            current: changed,
+            requiresCleanSource: true
+        ))
+        #expect(!DoctorApproval.matchesPinnedSource(
+            approved: approved,
+            current: dirty,
+            requiresCleanSource: true
+        ))
+    }
+    @Test
     func cleanOwnedDeploymentDriftIsRepairable() {
         let desired = authBarObservation(
             installedRevision: "bbbbbbb",
@@ -182,7 +216,7 @@ struct DoctorOrchestrationTests {
     func successfulRepairRequiresPostflightAlignment() async throws {
         let baseline = doctorSnapshot(installed: "bbbbbbb", source: "bbbbbbbbbbbb")
         let before = doctorSnapshot(installed: "aaaaaaa", source: "bbbbbbbbbbbb")
-        let fixture = try DoctorFixture(snapshots: [baseline, before, baseline])
+        let fixture = try DoctorFixture(snapshots: [baseline, before, before, baseline])
         defer { fixture.remove() }
         await fixture.store.start()
 
@@ -193,7 +227,7 @@ struct DoctorOrchestrationTests {
 
         #expect(fixture.store.doctorRun(for: "authbar")?.outcome == .repaired)
         #expect(await fixture.runner.callCount() == 1)
-        #expect(await fixture.inventory.callCount() == 3)
+        #expect(await fixture.inventory.callCount() == 4)
         #expect(fixture.store.selectedAssessment?.drifts.first {
             $0.componentID == "authbar"
         }?.state == .aligned)
@@ -204,7 +238,7 @@ struct DoctorOrchestrationTests {
     func successfulCommandWithoutPostflightProofStaysAttention() async throws {
         let baseline = doctorSnapshot(installed: "bbbbbbb", source: "bbbbbbbbbbbb")
         let before = doctorSnapshot(installed: "aaaaaaa", source: "bbbbbbbbbbbb")
-        let fixture = try DoctorFixture(snapshots: [baseline, before, before])
+        let fixture = try DoctorFixture(snapshots: [baseline, before, before, before])
         defer { fixture.remove() }
         await fixture.store.start()
 
@@ -215,6 +249,26 @@ struct DoctorOrchestrationTests {
 
         #expect(fixture.store.doctorRun(for: "authbar")?.outcome == .needsAttention)
         #expect(await fixture.runner.callCount() == 1)
+        #expect(await fixture.inventory.callCount() == 4)
+    }
+
+    @Test
+    @MainActor
+    func sourceChangeBetweenPreflightAndExecutionStopsSafely() async throws {
+        let baseline = doctorSnapshot(installed: "bbbbbbb", source: "bbbbbbbbbbbb")
+        let before = doctorSnapshot(installed: "aaaaaaa", source: "bbbbbbbbbbbb")
+        let changed = doctorSnapshot(installed: "aaaaaaa", source: "cccccccccccc")
+        let fixture = try DoctorFixture(snapshots: [baseline, before, changed])
+        defer { fixture.remove() }
+        await fixture.store.start()
+
+        await fixture.store.repair(
+            componentID: "authbar",
+            targetMachineID: doctorFixtureMachineID
+        )
+
+        #expect(fixture.store.doctorRun(for: "authbar")?.outcome == .protected)
+        #expect(await fixture.runner.callCount() == 0)
         #expect(await fixture.inventory.callCount() == 3)
     }
 }

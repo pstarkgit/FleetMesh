@@ -6,23 +6,71 @@ struct CommandResult: Sendable {
     let exitCode: Int32
     let standardOutput: String
     let standardError: String
+    let timedOut: Bool
 }
 
 protocol CommandRunning: Sendable {
     func run(
         executable: URL,
         arguments: [String],
-        environment: [String: String]?
+        environment: [String: String]?,
+        timeout: TimeInterval?
     ) async -> CommandResult
+}
+
+extension CommandRunning {
+    func run(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String]?
+    ) async -> CommandResult {
+        await run(
+            executable: executable,
+            arguments: arguments,
+            environment: environment,
+            timeout: nil
+        )
+    }
 }
 
 struct ProcessCommandRunner: CommandRunning {
     func run(
         executable: URL,
         arguments: [String],
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        timeout: TimeInterval? = nil
     ) async -> CommandResult {
         await Task.detached(priority: .utility) {
+            let captureRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("fleetmesh-command-\(UUID().uuidString)", isDirectory: true)
+            let outputURL = captureRoot.appendingPathComponent("stdout")
+            let errorURL = captureRoot.appendingPathComponent("stderr")
+            do {
+                try FileManager.default.createDirectory(
+                    at: captureRoot,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                _ = FileManager.default.createFile(
+                    atPath: outputURL.path,
+                    contents: nil,
+                    attributes: [.posixPermissions: 0o600]
+                )
+                _ = FileManager.default.createFile(
+                    atPath: errorURL.path,
+                    contents: nil,
+                    attributes: [.posixPermissions: 0o600]
+                )
+            } catch {
+                return CommandResult(
+                    exitCode: -1,
+                    standardOutput: "",
+                    standardError: error.localizedDescription,
+                    timedOut: false
+                )
+            }
+            defer { try? FileManager.default.removeItem(at: captureRoot) }
+
             let process = Process()
             process.executableURL = executable
             process.arguments = arguments
@@ -32,33 +80,68 @@ struct ProcessCommandRunner: CommandRunning {
                 }
             }
 
-            let output = Pipe()
-            let error = Pipe()
-            process.standardOutput = output
-            process.standardError = error
-
             do {
+                let outputHandle = try FileHandle(forWritingTo: outputURL)
+                let errorHandle = try FileHandle(forWritingTo: errorURL)
+                defer {
+                    try? outputHandle.close()
+                    try? errorHandle.close()
+                }
+                process.standardOutput = outputHandle
+                process.standardError = errorHandle
                 try process.run()
-                process.waitUntilExit()
+                var timedOut = false
+                let deadline = Date().addingTimeInterval(timeout ?? 5)
+                while process.isRunning && Date() < deadline {
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                if process.isRunning {
+                    timedOut = true
+                    process.terminate()
+                    let terminationDeadline = Date().addingTimeInterval(1)
+                    while process.isRunning && Date() < terminationDeadline {
+                        try? await Task.sleep(for: .milliseconds(50))
+                    }
+                    if process.isRunning {
+                        Darwin.kill(process.processIdentifier, SIGKILL)
+                        let killDeadline = Date().addingTimeInterval(1)
+                        while process.isRunning && Date() < killDeadline {
+                            try? await Task.sleep(for: .milliseconds(50))
+                        }
+                    }
+                }
+                try? outputHandle.close()
+                try? errorHandle.close()
                 return CommandResult(
-                    exitCode: process.terminationStatus,
+                    exitCode: process.isRunning ? -1 : process.terminationStatus,
                     standardOutput: String(
-                        data: output.fileHandleForReading.readDataToEndOfFile(),
+                        data: Self.readPrefix(outputURL, maximumBytes: 1_048_576),
                         encoding: .utf8
                     ) ?? "",
                     standardError: String(
-                        data: error.fileHandleForReading.readDataToEndOfFile(),
+                        data: Self.readPrefix(errorURL, maximumBytes: 1_048_576),
                         encoding: .utf8
-                    ) ?? ""
+                    ) ?? "",
+                    timedOut: timedOut
                 )
             } catch {
                 return CommandResult(
                     exitCode: -1,
                     standardOutput: "",
-                    standardError: error.localizedDescription
+                    standardError: error.localizedDescription,
+                    timedOut: false
                 )
             }
         }.value
+    }
+
+    private static func readPrefix(
+        _ url: URL,
+        maximumBytes: Int
+    ) -> Data {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return Data() }
+        defer { try? handle.close() }
+        return (try? handle.read(upToCount: maximumBytes)) ?? Data()
     }
 }
 
@@ -71,6 +154,7 @@ struct AppProbeDefinition: Sendable {
     let commitKeys: [String]
     let processNames: [String]
     let managedVersionProbe: ManagedVersionProbeDefinition?
+    let sourceVersionProbe: SourceVersionProbeDefinition?
 
     init(
         id: String,
@@ -80,7 +164,8 @@ struct AppProbeDefinition: Sendable {
         sourceRelativePath: String?,
         commitKeys: [String],
         processNames: [String],
-        managedVersionProbe: ManagedVersionProbeDefinition? = nil
+        managedVersionProbe: ManagedVersionProbeDefinition? = nil,
+        sourceVersionProbe: SourceVersionProbeDefinition? = nil
     ) {
         self.id = id
         self.name = name
@@ -90,6 +175,7 @@ struct AppProbeDefinition: Sendable {
         self.commitKeys = commitKeys
         self.processNames = processNames
         self.managedVersionProbe = managedVersionProbe
+        self.sourceVersionProbe = sourceVersionProbe
     }
 }
 
@@ -104,6 +190,18 @@ struct CLIProbeDefinition: Sendable {
     let executableCandidates: [String]
     let versionArguments: [String]
     let sourceRelativePath: String?
+    let sourceVersionProbe: SourceVersionProbeDefinition?
+}
+
+enum SourceVersionFormat: Sendable {
+    case swiftStaticCurrent
+    case cargoPackage
+    case packageJSON
+}
+
+struct SourceVersionProbeDefinition: Sendable {
+    let relativePath: String
+    let format: SourceVersionFormat
 }
 
 struct ThemeProbeDefinition: Sendable {
@@ -147,8 +245,9 @@ struct InventoryService: Sendable {
     }
 
     func capture(machineID: String, displayName: String? = nil) async -> MachineSnapshot {
-        async let apps = probeApplications()
-        async let clis = probeCLIs()
+        let context = await captureContext()
+        async let apps = probeApplications(context: context)
+        async let clis = probeCLIs(context: context)
         async let themes = probeThemes()
         async let harness = probeHarnessSync()
 
@@ -178,12 +277,86 @@ struct InventoryService: Sendable {
         )
     }
 
-    private func probeApplications() async -> [ComponentObservation] {
+    private struct CaptureContext: Sendable {
+        let applicationDiscovery: ApplicationDiscovery
+        let runningProcessNames: Set<String>?
+    }
+
+    private struct ApplicationDiscovery: Sendable {
+        let applicationsByBundleID: [String: URL]
+        let isComplete: Bool
+    }
+
+    private func captureContext() async -> CaptureContext {
+        async let applications = Task.detached(priority: .utility) {
+            Self.applicationIndex(homeURL: homeURL)
+        }.value
+        async let processes = commandRunner.run(
+            executable: URL(fileURLWithPath: "/bin/ps"),
+            arguments: ["-axo", "ucomm="],
+            environment: nil,
+            timeout: 5
+        )
+        let (applicationIndex, processResult) = await (applications, processes)
+        let runningNames: Set<String>?
+        if processResult.exitCode == 0, !processResult.timedOut {
+            runningNames = Set(processResult.standardOutput.split(separator: "\n").map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            })
+        } else {
+            runningNames = nil
+        }
+        return CaptureContext(
+            applicationDiscovery: applicationIndex,
+            runningProcessNames: runningNames
+        )
+    }
+
+    private static func applicationIndex(homeURL: URL) -> ApplicationDiscovery {
+        var result: [String: URL] = [:]
+        let roots = [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            homeURL.appendingPathComponent("Applications", isDirectory: true),
+        ]
+        var isComplete = true
+        for root in roots {
+            let resourceValues = try? root.resourceValues(forKeys: [.isDirectoryKey])
+            if resourceValues?.isDirectory != true {
+                // A root that does not exist cannot contain an application and
+                // is not a discovery failure. An existing unreadable root is.
+                if FileManager.default.fileExists(atPath: root.path) { isComplete = false }
+                continue
+            }
+            guard let entries = try? FileManager.default.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else {
+                isComplete = false
+                continue
+            }
+            for entry in entries where entry.pathExtension == "app" {
+                guard let bundle = Bundle(url: entry),
+                      let identifier = bundle.bundleIdentifier,
+                      bundle.infoDictionary != nil else {
+                    isComplete = false
+                    continue
+                }
+                result[identifier] = result[identifier] ?? entry
+            }
+        }
+        return ApplicationDiscovery(
+            applicationsByBundleID: result,
+            isComplete: isComplete
+        )
+    }
+
+    private func probeApplications(context: CaptureContext) async -> [ComponentObservation] {
         let definitions = Self.applicationDefinitions
 
         return await withTaskGroup(of: ComponentObservation.self) { group in
             for definition in definitions {
-                group.addTask { await probeApplication(definition) }
+                group.addTask { await probeApplication(definition, context: context) }
             }
             var observations: [ComponentObservation] = []
             for await observation in group { observations.append(observation) }
@@ -203,7 +376,11 @@ struct InventoryService: Sendable {
                 ],
                 sourceRelativePath: "code/device-sync",
                 commitKeys: ["DSCommit"],
-                processNames: [FleetMeshIdentity.executableName]
+                processNames: [FleetMeshIdentity.executableName],
+                sourceVersionProbe: SourceVersionProbeDefinition(
+                    relativePath: "Sources/DeviceSync/DeviceSyncVersion.swift",
+                    format: .swiftStaticCurrent
+                )
             ),
             AppProbeDefinition(
                 id: "authbar",
@@ -212,7 +389,11 @@ struct InventoryService: Sendable {
                 preferredPaths: ["/Applications/AuthBar.app"],
                 sourceRelativePath: "code/authbar",
                 commitKeys: ["ABCommit"],
-                processNames: ["AuthBar"]
+                processNames: ["AuthBar"],
+                sourceVersionProbe: SourceVersionProbeDefinition(
+                    relativePath: "Sources/AuthBar/AuthBarVersion.swift",
+                    format: .swiftStaticCurrent
+                )
             ),
             AppProbeDefinition(
                 id: "stow",
@@ -221,7 +402,11 @@ struct InventoryService: Sendable {
                 preferredPaths: ["/Applications/Stow.app"],
                 sourceRelativePath: "code/Stow",
                 commitKeys: ["STCommit"],
-                processNames: ["Stow"]
+                processNames: ["Stow"],
+                sourceVersionProbe: SourceVersionProbeDefinition(
+                    relativePath: "Sources/Stow/StowVersion.swift",
+                    format: .swiftStaticCurrent
+                )
             ),
             AppProbeDefinition(
                 id: "murmr-voice",
@@ -230,7 +415,11 @@ struct InventoryService: Sendable {
                 preferredPaths: ["/Applications/Murmr Voice.app"],
                 sourceRelativePath: "code/Murmur",
                 commitKeys: ["MRCommit"],
-                processNames: ["Murmur", "Murmr Voice"]
+                processNames: ["Murmur", "Murmr Voice"],
+                sourceVersionProbe: SourceVersionProbeDefinition(
+                    relativePath: "Sources/Murmur/MurmurVersion.swift",
+                    format: .swiftStaticCurrent
+                )
             ),
             AppProbeDefinition(
                 id: "model-bridge",
@@ -242,7 +431,11 @@ struct InventoryService: Sendable {
                 ],
                 sourceRelativePath: "code/ModelBridge",
                 commitKeys: [],
-                processNames: ["Model Bridge"]
+                processNames: ["Model Bridge"],
+                sourceVersionProbe: SourceVersionProbeDefinition(
+                    relativePath: "package.json",
+                    format: .packageJSON
+                )
             ),
             AppProbeDefinition(
                 id: "codex-desktop",
@@ -280,24 +473,65 @@ struct InventoryService: Sendable {
             ),
         ]
 
-    private func probeApplication(_ definition: AppProbeDefinition) async -> ComponentObservation {
-        let appURL = locateApplication(definition)
-        let source = await sourceState(relativePath: definition.sourceRelativePath)
-        let isRunning = await processIsRunning(names: definition.processNames)
+    private func probeApplication(
+        _ definition: AppProbeDefinition,
+        context: CaptureContext
+    ) async -> ComponentObservation {
+        let appURL = locateApplication(
+            definition,
+            applicationsByBundleID: context.applicationDiscovery.applicationsByBundleID
+        )
+        let source = await sourceState(
+            relativePath: definition.sourceRelativePath,
+            versionProbe: definition.sourceVersionProbe
+        )
+        let isRunning = context.runningProcessNames.map { runningNames in
+            definition.processNames.contains { runningNames.contains($0) }
+        }
 
-        guard let appURL,
-              let bundle = Bundle(url: appURL),
-              let info = bundle.infoDictionary else {
+        if appURL == nil, !context.applicationDiscovery.isComplete {
+            return ComponentObservation(
+                id: definition.id,
+                name: definition.name,
+                kind: .application,
+                status: .unknown,
+                sourceVersion: source?.version,
+                sourceRevision: source?.revision,
+                sourceBranch: source?.branch,
+                sourceDirty: source?.dirty,
+                isRunning: isRunning,
+                evidence: "Application discovery could not be completed."
+            )
+        }
+
+        guard let appURL else {
             return ComponentObservation(
                 id: definition.id,
                 name: definition.name,
                 kind: .application,
                 status: .missing,
+                sourceVersion: source?.version,
                 sourceRevision: source?.revision,
                 sourceBranch: source?.branch,
                 sourceDirty: source?.dirty,
-                isRunning: false,
+                isRunning: isRunning,
                 evidence: "No matching application bundle was found."
+            )
+        }
+
+        guard let bundle = Bundle(url: appURL),
+              let info = bundle.infoDictionary else {
+            return ComponentObservation(
+                id: definition.id,
+                name: definition.name,
+                kind: .application,
+                status: .unknown,
+                sourceVersion: source?.version,
+                sourceRevision: source?.revision,
+                sourceBranch: source?.branch,
+                sourceDirty: source?.dirty,
+                isRunning: isRunning,
+                evidence: "A matching application exists, but its bundle metadata could not be read."
             )
         }
 
@@ -315,6 +549,7 @@ struct InventoryService: Sendable {
                 ?? info["CFBundleShortVersionString"] as? String,
             build: info["CFBundleVersion"] as? String,
             installedRevision: installedCommit,
+            sourceVersion: source?.version,
             sourceRevision: source?.revision,
             sourceBranch: source?.branch,
             sourceDirty: source?.dirty,
@@ -344,7 +579,8 @@ struct InventoryService: Sendable {
         let result = await commandRunner.run(
             executable: executable,
             arguments: definition.arguments,
-            environment: nil
+            environment: nil,
+            timeout: 5
         )
         guard result.exitCode == 0 else { return nil }
         return parseVersion(
@@ -353,7 +589,7 @@ struct InventoryService: Sendable {
         )
     }
 
-    private func probeCLIs() async -> [ComponentObservation] {
+    private func probeCLIs(context: CaptureContext) async -> [ComponentObservation] {
         let definitions = [
             CLIProbeDefinition(
                 id: "ai-continuum",
@@ -364,7 +600,11 @@ struct InventoryService: Sendable {
                     "/usr/local/bin/ai-continuum-ctl",
                 ],
                 versionArguments: ["--version"],
-                sourceRelativePath: "code/ai-continuum"
+                sourceRelativePath: "code/ai-continuum",
+                sourceVersionProbe: SourceVersionProbeDefinition(
+                    relativePath: "Cargo.toml",
+                    format: .cargoPackage
+                )
             ),
             CLIProbeDefinition(
                 id: "codex-cli",
@@ -376,13 +616,14 @@ struct InventoryService: Sendable {
                     "/usr/local/bin/codex",
                 ],
                 versionArguments: ["--version"],
-                sourceRelativePath: nil
+                sourceRelativePath: nil,
+                sourceVersionProbe: nil
             ),
         ]
 
         return await withTaskGroup(of: ComponentObservation.self) { group in
             for definition in definitions {
-                group.addTask { await probeCLI(definition) }
+                group.addTask { await probeCLI(definition, context: context) }
             }
             var observations: [ComponentObservation] = []
             for await observation in group { observations.append(observation) }
@@ -390,8 +631,14 @@ struct InventoryService: Sendable {
         }
     }
 
-    private func probeCLI(_ definition: CLIProbeDefinition) async -> ComponentObservation {
-        let source = await sourceState(relativePath: definition.sourceRelativePath)
+    private func probeCLI(
+        _ definition: CLIProbeDefinition,
+        context: CaptureContext
+    ) async -> ComponentObservation {
+        let source = await sourceState(
+            relativePath: definition.sourceRelativePath,
+            versionProbe: definition.sourceVersionProbe
+        )
         guard let executable = definition.executableCandidates
             .map(expandedURL)
             .first(where: { fileManager.isExecutableFile(atPath: $0.path) }) else {
@@ -400,6 +647,7 @@ struct InventoryService: Sendable {
                 name: definition.name,
                 kind: definition.id == "ai-continuum" ? .service : .commandLineTool,
                 status: .missing,
+                sourceVersion: source?.version,
                 sourceRevision: source?.revision,
                 sourceBranch: source?.branch,
                 sourceDirty: source?.dirty,
@@ -410,7 +658,8 @@ struct InventoryService: Sendable {
         let result = await commandRunner.run(
             executable: executable,
             arguments: definition.versionArguments,
-            environment: nil
+            environment: nil,
+            timeout: 5
         )
         let output = (result.standardOutput + " " + result.standardError)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -422,11 +671,12 @@ struct InventoryService: Sendable {
             kind: definition.id == "ai-continuum" ? .service : .commandLineTool,
             status: result.exitCode == 0 ? .installed : .unknown,
             installedVersion: version,
+            sourceVersion: source?.version,
             sourceRevision: source?.revision,
             sourceBranch: source?.branch,
             sourceDirty: source?.dirty,
             isRunning: definition.id == "ai-continuum"
-                ? await processIsRunning(names: ["ai-continuum-daemon"])
+                ? context.runningProcessNames.map { $0.contains("ai-continuum-daemon") }
                 : nil,
             evidence: result.exitCode == 0
                 ? "Version returned by the installed executable."
@@ -542,24 +792,17 @@ struct InventoryService: Sendable {
         )
     }
 
-    private func locateApplication(_ definition: AppProbeDefinition) -> URL? {
+    private func locateApplication(
+        _ definition: AppProbeDefinition,
+        applicationsByBundleID: [String: URL]
+    ) -> URL? {
         for path in definition.preferredPaths {
             let url = expandedURL(path)
             if fileManager.fileExists(atPath: url.path) { return url }
         }
 
-        for root in [URL(fileURLWithPath: "/Applications"), homeURL.appendingPathComponent("Applications")] {
-            guard let entries = try? fileManager.contentsOfDirectory(
-                at: root,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            ) else { continue }
-            for entry in entries where entry.pathExtension == "app" {
-                guard let bundle = Bundle(url: entry), let identifier = bundle.bundleIdentifier else {
-                    continue
-                }
-                if definition.bundleIdentifiers.contains(identifier) { return entry }
-            }
+        for identifier in definition.bundleIdentifiers {
+            if let indexed = applicationsByBundleID[identifier] { return indexed }
         }
         return nil
     }
@@ -568,9 +811,13 @@ struct InventoryService: Sendable {
         let revision: String
         let branch: String?
         let dirty: Bool
+        let version: String?
     }
 
-    private func sourceState(relativePath: String?) async -> SourceState? {
+    private func sourceState(
+        relativePath: String?,
+        versionProbe: SourceVersionProbeDefinition? = nil
+    ) async -> SourceState? {
         guard let relativePath else { return nil }
         let url: URL
         if relativePath.hasPrefix("../") {
@@ -581,43 +828,102 @@ struct InventoryService: Sendable {
         let git = url.appendingPathComponent(".git")
         guard fileManager.fileExists(atPath: git.path) else { return nil }
 
-        let revisionResult = await gitCommand(["-C", url.path, "rev-parse", "--short=12", "HEAD"])
-        guard revisionResult.exitCode == 0 else { return nil }
+        let revisionResult = await gitCommand(["-C", url.path, "rev-parse", "HEAD"])
+        guard revisionResult.exitCode == 0, !revisionResult.timedOut else { return nil }
+        let revision = revisionResult.standardOutput
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard revision.count == 40,
+              revision.unicodeScalars.allSatisfy(
+                CharacterSet(charactersIn: "0123456789abcdefABCDEF").contains
+              ) else { return nil }
         let branchResult = await gitCommand(["-C", url.path, "branch", "--show-current"])
         let statusResult = await gitCommand(["-C", url.path, "status", "--porcelain"])
+        guard branchResult.exitCode == 0, !branchResult.timedOut,
+              statusResult.exitCode == 0, !statusResult.timedOut else { return nil }
+        let sourceVersion: String?
+        if let versionProbe {
+            let versionResult = await gitCommand([
+                "-C", url.path, "show", "\(revision):\(versionProbe.relativePath)",
+            ])
+            sourceVersion = versionResult.exitCode == 0 && !versionResult.timedOut
+                ? Self.parseSourceVersion(
+                    data: Data(versionResult.standardOutput.utf8),
+                    format: versionProbe.format
+                )
+                : nil
+        } else {
+            sourceVersion = nil
+        }
+        let finalRevisionResult = await gitCommand(["-C", url.path, "rev-parse", "HEAD"])
+        let finalRevision = finalRevisionResult.standardOutput
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard finalRevisionResult.exitCode == 0, !finalRevisionResult.timedOut,
+              finalRevision == revision else { return nil }
         return SourceState(
-            revision: revisionResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines),
+            revision: String(revision.prefix(12)),
             branch: branchResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-            dirty: !statusResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            dirty: !statusResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            version: sourceVersion
         )
+    }
+
+    static func parseSourceVersion(
+        data: Data,
+        format: SourceVersionFormat
+    ) -> String? {
+        switch format {
+        case .packageJSON:
+            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let version = object["version"] as? String else { return nil }
+            return VersionIdentity.normalizedDeclaration(version)
+        case .swiftStaticCurrent:
+            guard let text = String(data: data, encoding: .utf8) else { return nil }
+            return captureVersion(
+                in: text,
+                pattern: #"static\s+let\s+current\s*=\s*\"([^\"]+)\""#
+            )
+        case .cargoPackage:
+            guard let text = String(data: data, encoding: .utf8),
+                  let packageRange = text.range(
+                    of: #"(?ms)^\[(?:workspace\.)?package\]\s*$.*?(?=^\[|\z)"#,
+                    options: .regularExpression
+                  ) else { return nil }
+            return captureVersion(
+                in: String(text[packageRange]),
+                pattern: #"(?m)^\s*version\s*=\s*\"([^\"]+)\""#
+            )
+        }
+    }
+
+    private static func captureVersion(in text: String, pattern: String) -> String? {
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: text,
+                range: NSRange(text.startIndex..., in: text)
+              ),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: text) else { return nil }
+        return VersionIdentity.normalizedDeclaration(String(text[range]))
     }
 
     private func gitCommand(_ arguments: [String]) async -> CommandResult {
         await commandRunner.run(
             executable: URL(fileURLWithPath: "/usr/bin/git"),
             arguments: arguments,
-            environment: ["GIT_OPTIONAL_LOCKS": "0"]
+            environment: [
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_TERMINAL_PROMPT": "0",
+            ],
+            timeout: 5
         )
-    }
-
-    private func processIsRunning(names: [String]) async -> Bool {
-        let result = await commandRunner.run(
-            executable: URL(fileURLWithPath: "/bin/ps"),
-            arguments: ["-axo", "ucomm="],
-            environment: nil
-        )
-        guard result.exitCode == 0 else { return false }
-        let runningNames = Set(result.standardOutput.split(separator: "\n").map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        })
-        return names.contains { runningNames.contains($0) }
     }
 
     private func computerName() async -> String {
         let result = await commandRunner.run(
             executable: URL(fileURLWithPath: "/usr/sbin/scutil"),
             arguments: ["--get", "ComputerName"],
-            environment: nil
+            environment: nil,
+            timeout: 5
         )
         return result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             ?? Host.current().localizedName
@@ -628,7 +934,8 @@ struct InventoryService: Sendable {
         let result = await commandRunner.run(
             executable: URL(fileURLWithPath: "/usr/sbin/scutil"),
             arguments: ["--get", "LocalHostName"],
-            environment: nil
+            environment: nil,
+            timeout: 5
         )
         return result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             ?? ProcessInfo.processInfo.hostName
@@ -638,7 +945,8 @@ struct InventoryService: Sendable {
         let result = await commandRunner.run(
             executable: URL(fileURLWithPath: "/usr/bin/sw_vers"),
             arguments: ["-buildVersion"],
-            environment: nil
+            environment: nil,
+            timeout: 5
         )
         return result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             ?? "Unknown build"
@@ -677,14 +985,7 @@ struct InventoryService: Sendable {
     }
 
     private func parseVersion(from output: String) -> String? {
-        let pattern = #"\b\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?\b"#
-        guard let expression = try? NSRegularExpression(pattern: pattern),
-              let match = expression.firstMatch(
-                in: output,
-                range: NSRange(output.startIndex..., in: output)
-              ),
-              let range = Range(match.range, in: output) else { return output.nilIfEmpty }
-        return String(output[range])
+        VersionIdentity.extract(from: output)
     }
 
     private func architecture() -> String {

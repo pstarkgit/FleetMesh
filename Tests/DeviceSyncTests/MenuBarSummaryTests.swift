@@ -5,6 +5,13 @@ import Testing
 
 struct MenuBarSummaryTests {
     @Test
+    func fleetHealthExitCodesDistinguishPostureFromSelfCheck() {
+        #expect(FleetVerdict.aligned.headlessExitCode == 0)
+        #expect(FleetVerdict.attention.headlessExitCode == 2)
+        #expect(FleetVerdict.critical.headlessExitCode == 3)
+        #expect(FleetVerdict.unknown.headlessExitCode == 4)
+    }
+    @Test
     func verdictsMapToDistinctStatusSymbols() {
         #expect(summary(.aligned).statusSymbol == "checkmark.circle.fill")
         #expect(summary(.attention).statusSymbol == "exclamationmark.triangle.fill")
