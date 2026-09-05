@@ -155,3 +155,18 @@ identity decisions. Checkout details stay local and are not published. After
 execution, it publishes another fresh snapshot. Exit
 zero is not success by itself: the UI reports verified alignment, machine repair
 with a separate baseline decision, or remaining attention from observed state.
+
+Protected configuration work uses a visible resolution handoff, not an implicit
+mutation. FleetMesh starts a persistent Codex task scoped to its hard-coded known
+checkout with a fixed preservation-first prompt, reveal that checkout, or scan
+again. It keeps ownership of the background process through `turn.completed`
+and clean exit, then renders the bounded final agent summary and selectable task
+ID inside FleetMesh. This avoids interrupting an active CLI-owned turn, stealing
+desktop focus, or requesting cross-app data access. The prompt may authorize a tested local commit while keeping destructive
+cleanup, push, PR, merge, bootstrap/sync, and baseline changes separately gated.
+No prompt, path, or command is read from fleet JSON.
+
+After the checkout becomes clean, an exact committed configuration mismatch is
+a baseline decision rather than a repair. Doctor suppresses the product bootstrap
+recipe and offers an explicit confirmed observed-baseline action; ordinary scans
+and Codex completion never invoke it.

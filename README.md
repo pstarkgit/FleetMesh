@@ -157,6 +157,25 @@ Doctor will not repair remote devices, execute commands from the manifest,
 overwrite dirty source or themes, switch unapproved revisions, replace a theme,
 or change the baseline as part of a repair.
 
+When a managed configuration checkout contains local work, Doctor does not leave
+the user at a dead end. **Resolve with Codex** starts a persistent visible task rooted at the
+known checkout with a fixed preservation-first brief; **Review changes** reveals
+the checkout; and **Scan again** re-evaluates it afterward. The recommended order
+is to review, test, and commit intentional durable changes first. Rebaselining is
+never used to hide a dirty checkout. If the clean committed configuration later
+differs from desired state, baseline adoption remains a separate explicit action.
+Doctor treats that clean committed difference as an operator decision, never as
+a reason to run `bootstrap.sh`; the observed fingerprint changes desired state
+only through the confirmed **Use observed as baseline…** action.
+
+FleetMesh keeps the authenticated Codex agent in the background so it does not
+take over the desktop. It reports success only after the real task finishes,
+then renders that task's final summary and selectable ID inside FleetMesh; it
+does not automatically open or read another app. The Codex handoff may prepare a focused local branch and commit tested intentional
+work. It may not reset, clean, stash, amend, force-push, discard uncertain files,
+push, create or merge a pull request, or run a configuration-changing bootstrap
+without separate authorization in that task.
+
 ## Run and test
 
 ```bash

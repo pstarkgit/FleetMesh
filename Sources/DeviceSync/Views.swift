@@ -1561,6 +1561,7 @@ private struct FlowStep: View {
 struct DoctorView: View {
     @Bindable var store: FleetStore
     @State private var pendingRepair: DoctorFinding?
+    @State private var pendingConfigurationBaseline: ComponentObservation?
 
     var body: some View {
         ScrollView {
@@ -1568,6 +1569,15 @@ struct DoctorView: View {
                 doctorHeader
                 if let error = store.lastError {
                     IssueBanner(title: "Doctor evidence failed", detail: error, color: DSTheme.red)
+                }
+                if store.isLaunchingCodexResolution {
+                    DoctorCodexProgressBanner()
+                }
+                if let taskID = store.completedCodexResolutionTaskID {
+                    DoctorCodexResultBanner(
+                        taskID: taskID,
+                        summary: store.completedCodexResolutionSummary
+                    )
                 }
 
                 if let assessment = store.selectedAssessment {
@@ -1601,12 +1611,23 @@ struct DoctorView: View {
                             ForEach(findings) { finding in
                                 DoctorFindingRow(
                                     finding: finding,
+                                    observation: assessment.snapshot.component(finding.id),
                                     run: store.doctorRun(for: finding.id),
                                     isActive: store.activeDoctorComponentID == finding.id,
+                                    isCodexResolving: store.isLaunchingCodexResolution,
                                     isLocalMachine: assessment.snapshot.machineID == store.localSnapshot?.machineID,
-                                    doctorBusy: store.isDoctorRunning || store.isRefreshing
+                                    doctorBusy: store.isBusy,
+                                    canResolveCheckout: store.canResolveCheckoutWithCodex(finding)
                                 ) {
                                     pendingRepair = finding
+                                } onResolveWithCodex: {
+                                    Task { await store.resolveCheckoutWithCodex(finding) }
+                                } onReviewCheckout: {
+                                    store.revealCheckout(componentID: finding.id)
+                                } onUseObservedBaseline: { observation in
+                                    pendingConfigurationBaseline = observation
+                                } onScanAgain: {
+                                    Task { await store.refresh() }
                                 }
                             }
                         }
@@ -1645,6 +1666,28 @@ struct DoctorView: View {
         } message: {
             if let finding = pendingRepair, let recipe = finding.recipe {
                 Text("FleetMesh will run \(recipe.displayCommand), then re-scan and publish the observed result. The fleet baseline will not change.")
+            }
+        }
+        .confirmationDialog(
+            pendingConfigurationBaseline.map { "Use observed \($0.name) configuration?" }
+                ?? "Change configuration baseline?",
+            isPresented: Binding(
+                get: { pendingConfigurationBaseline != nil },
+                set: { if !$0 { pendingConfigurationBaseline = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Use observed configuration as baseline") {
+                guard let observation = pendingConfigurationBaseline else { return }
+                pendingConfigurationBaseline = nil
+                Task {
+                    await store.useObservedConfigurationAsBaseline(componentID: observation.id)
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingConfigurationBaseline = nil }
+        } message: {
+            if let observation = pendingConfigurationBaseline {
+                Text("This changes the exact fleet-wide configuration or theme fingerprint for \(observation.name). FleetMesh will scan again first and will not run bootstrap or install software.")
             }
         }
     }
@@ -1803,11 +1846,18 @@ private struct DoctorCountCard: View {
 
 private struct DoctorFindingRow: View {
     let finding: DoctorFinding
+    let observation: ComponentObservation?
     let run: DoctorRunRecord?
     let isActive: Bool
+    let isCodexResolving: Bool
     let isLocalMachine: Bool
     let doctorBusy: Bool
+    let canResolveCheckout: Bool
     let onRepair: () -> Void
+    let onResolveWithCodex: () -> Void
+    let onReviewCheckout: () -> Void
+    let onUseObservedBaseline: (ComponentObservation) -> Void
+    let onScanAgain: () -> Void
 
     @State private var showOutput = false
 
@@ -1857,7 +1907,69 @@ private struct DoctorFindingRow: View {
                 }
             }
 
-            if let recipe = finding.recipe {
+            if finding.needsCheckoutResolution {
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("Recommended resolution")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DSTheme.purple)
+                    Text("Commit intentional local work first. Do not rebaseline FleetMesh just to make a dirty checkout disappear. After the checkout is clean, scan again; baseline review is separate if the committed configuration changed.")
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        Button(isCodexResolving ? "Codex working…" : "Resolve with Codex", action: onResolveWithCodex)
+                            .buttonStyle(.borderedProminent)
+                            .tint(DSTheme.purple)
+                            .disabled(doctorBusy || !isLocalMachine || !canResolveCheckout)
+                            .accessibilityIdentifier("doctor.resolveWithCodex.\(finding.id)")
+                        Button("Review changes", action: onReviewCheckout)
+                            .buttonStyle(.bordered)
+                            .disabled(doctorBusy || !isLocalMachine || !canResolveCheckout)
+                            .accessibilityIdentifier("doctor.reviewCheckout.\(finding.id)")
+                        Button("Scan again", action: onScanAgain)
+                            .buttonStyle(.bordered)
+                            .disabled(doctorBusy || !isLocalMachine)
+                            .accessibilityIdentifier("doctor.scanAgain.\(finding.id)")
+                    }
+                }
+                .padding(11)
+                .background(DSTheme.purple.opacity(0.07))
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+            }
+
+            if finding.needsBaselineDecision, let observation {
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("Committed configuration decision")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DSTheme.blue)
+                    Text("The checkout is clean and committed. Review the exact fingerprint change, then adopt it only if it should become fleet-wide desired state. Bootstrap is not a repair for this difference.")
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        Button("Use observed as baseline…") {
+                            onUseObservedBaseline(observation)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(DSTheme.blue)
+                        .disabled(doctorBusy || !isLocalMachine)
+                        .accessibilityIdentifier("doctor.useObservedBaseline.\(finding.id)")
+                        Button("Review changes", action: onReviewCheckout)
+                            .buttonStyle(.bordered)
+                            .disabled(doctorBusy || !isLocalMachine || !canResolveCheckout)
+                            .accessibilityIdentifier("doctor.reviewCheckout.\(finding.id)")
+                        Button("Scan again", action: onScanAgain)
+                            .buttonStyle(.bordered)
+                            .disabled(doctorBusy || !isLocalMachine)
+                            .accessibilityIdentifier("doctor.scanAgain.\(finding.id)")
+                    }
+                }
+                .padding(11)
+                .background(DSTheme.blue.opacity(0.07))
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+            }
+
+            if finding.canRepair, let recipe = finding.recipe {
                 HStack(spacing: 8) {
                     Image(systemName: "terminal")
                     Text(recipe.displayCommand)
@@ -1949,6 +2061,64 @@ private struct DoctorFindingRow: View {
         case .protected: "hand.raised.fill"
         case .failed: "xmark.octagon.fill"
         }
+    }
+}
+
+private struct DoctorCodexProgressBanner: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            ProgressView().controlSize(.small)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Codex is resolving Harness Sync")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(DSTheme.ink)
+                Text("FleetMesh is keeping the agent in the background so you can continue working. It will not switch apps or change the fleet baseline.")
+                    .font(.caption)
+                    .foregroundStyle(DSTheme.inkSoft)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(DSTheme.purple.opacity(0.09))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .accessibilityIdentifier("doctor.codexProgress")
+    }
+}
+
+private struct DoctorCodexResultBanner: View {
+    let taskID: String
+    let summary: String?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(DSTheme.green)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Codex resolution finished")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(DSTheme.ink)
+                Text("Task \(taskID). The task is saved in Codex; FleetMesh keeps the result here so it does not need access to another app. Scan again after review. Baseline adoption remains separate.")
+                    .font(.caption)
+                    .foregroundStyle(DSTheme.inkSoft)
+                    .textSelection(.enabled)
+                if let summary, !summary.isEmpty {
+                    DisclosureGroup("Resolution summary") {
+                        Text(summary)
+                            .font(.caption)
+                            .foregroundStyle(DSTheme.inkSoft)
+                            .textSelection(.enabled)
+                            .padding(.top, 6)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(DSTheme.ink)
+                    .accessibilityIdentifier("doctor.codexResultSummary")
+                }
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(DSTheme.green.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
