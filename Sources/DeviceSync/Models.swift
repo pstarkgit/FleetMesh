@@ -169,6 +169,54 @@ struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+struct FleetScopeItem: Identifiable, Hashable, Sendable {
+    let observation: ComponentObservation?
+    let target: ManifestTarget?
+
+    var id: String { observation?.id ?? target?.id ?? "unknown" }
+
+    var name: String {
+        ComponentLifecycle.displayName(
+            for: id,
+            fallback: observation?.name ?? target?.name ?? id
+        )
+    }
+
+    var kind: ComponentKind {
+        observation?.kind ?? target?.kind ?? .configuration
+    }
+
+    var isManaged: Bool { target != nil }
+
+    var canAdd: Bool {
+        observation.map(FleetManifest.isEligibleForBaseline) == true
+    }
+
+    var observedSummary: String {
+        guard let observation else { return "Not reported by this Mac" }
+        switch observation.status {
+        case .installed:
+            if observation.kind == .theme {
+                let count = observation.items?.count ?? 0
+                return "\(count) file\(count == 1 ? "" : "s") observed"
+            }
+            if let version = observation.installedVersion
+                ?? observation.installedRevision
+                ?? observation.sourceRevision {
+                return version
+            }
+            if let fingerprint = observation.configurationFingerprint {
+                return "Fingerprint \(fingerprint.prefix(12))"
+            }
+            return "Installed"
+        case .missing:
+            return "Not installed on this Mac"
+        case .unknown:
+            return "Current state is unknown"
+        }
+    }
+}
+
 struct FleetManifest: Codable, Hashable, Sendable {
     static let currentSchemaVersion = 1
 
@@ -188,18 +236,97 @@ struct FleetManifest: Codable, Hashable, Sendable {
         self.updatedAt = updatedAt
         updatedByMachineID = snapshot.machineID
         targets = snapshot.components
-            .filter { observation in
-                ComponentLifecycle.isActive(observation.id)
-                    && (observation.status == .installed
-                        || (observation.kind == .theme && !(observation.items ?? []).isEmpty))
-            }
+            .filter(Self.isEligibleForBaseline)
             .map { ManifestTarget(observation: $0) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private init(
+        schemaVersion: Int,
+        revision: String,
+        updatedAt: Date,
+        updatedByMachineID: String,
+        targets: [ManifestTarget]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.revision = revision
+        self.updatedAt = updatedAt
+        self.updatedByMachineID = updatedByMachineID
+        self.targets = targets
+    }
+
+    static func isEligibleForBaseline(_ observation: ComponentObservation) -> Bool {
+        ComponentLifecycle.isActive(observation.id)
+            && (observation.status == .installed
+                || (observation.kind == .theme && !(observation.items ?? []).isEmpty))
+    }
+
+    func settingManaged(
+        componentID: String,
+        managed: Bool,
+        observation: ComponentObservation?,
+        updatedByMachineID: String,
+        updatedAt: Date = Date()
+    ) throws -> FleetManifest {
+        guard ComponentLifecycle.isActive(componentID) else {
+            throw FleetManifestError.retiredComponent(componentID)
+        }
+
+        let isCurrentlyManaged = targets.contains { $0.id == componentID }
+        guard isCurrentlyManaged != managed else {
+            throw managed
+                ? FleetManifestError.alreadyManaged(componentID)
+                : FleetManifestError.alreadyUnmanaged(componentID)
+        }
+
+        var updatedTargets = targets.filter { $0.id != componentID }
+        if managed {
+            guard let observation, observation.id == componentID else {
+                throw FleetManifestError.missingObservation(componentID)
+            }
+            guard Self.isEligibleForBaseline(observation) else {
+                throw FleetManifestError.ineligibleObservation(observation.name)
+            }
+            updatedTargets.append(ManifestTarget(observation: observation))
+        }
+
+        return FleetManifest(
+            schemaVersion: schemaVersion,
+            revision: UUID().uuidString.lowercased(),
+            updatedAt: updatedAt,
+            updatedByMachineID: updatedByMachineID,
+            targets: updatedTargets.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        )
     }
 
     func target(_ id: String) -> ManifestTarget? {
         guard ComponentLifecycle.isActive(id) else { return nil }
         return targets.first { $0.id == id }
+    }
+}
+
+enum FleetManifestError: LocalizedError {
+    case missingObservation(String)
+    case ineligibleObservation(String)
+    case retiredComponent(String)
+    case alreadyManaged(String)
+    case alreadyUnmanaged(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingObservation(let componentID):
+            "This Mac has not reported enough evidence to add \(componentID) to fleet scope."
+        case .ineligibleObservation(let name):
+            "\(name) must be installed or configured on this Mac before it can define fleet scope."
+        case .retiredComponent(let componentID):
+            "\(componentID) is retired and cannot be added to the active fleet baseline."
+        case .alreadyManaged(let componentID):
+            "\(componentID) is already managed by the fleet baseline."
+        case .alreadyUnmanaged(let componentID):
+            "\(componentID) is already outside fleet scope."
+        }
     }
 }
 
@@ -281,6 +408,10 @@ struct MachineAssessment: Identifiable, Hashable, Sendable {
 
     var id: String { snapshot.machineID }
 
+    var managedDrifts: [ComponentDrift] {
+        drifts.filter { $0.state != .notManaged }
+    }
+
     var verdict: FleetVerdict {
         if drifts.contains(where: { $0.severity == .critical }) { return .critical }
         if isStale || drifts.contains(where: { $0.severity == .attention }) { return .attention }
@@ -289,8 +420,18 @@ struct MachineAssessment: Identifiable, Hashable, Sendable {
     }
 
     var attentionCount: Int {
-        drifts.filter { $0.state != .aligned && $0.state != .notManaged }.count
+        managedDrifts.filter { $0.state != .aligned }.count
             + (isStale ? 1 : 0)
+    }
+}
+
+enum FleetDateFormatting {
+    static func relative(_ date: Date, now: Date = Date()) -> String {
+        let interval = date.timeIntervalSince(now)
+        guard abs(interval) >= 60 else { return "just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 }
 

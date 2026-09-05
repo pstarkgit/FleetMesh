@@ -60,6 +60,16 @@ repair remain in the singleton full window. Opening Fleet or Doctor from the
 menu bar updates shared navigation before activating that window, so there is
 no second dashboard or divergent repair state.
 
+Closing the singleton window does not terminate FleetMesh: the native status
+item remains the persistent control surface. Dock activation and menu actions
+reopen the same scene with bounded retries for asynchronous SwiftUI window
+creation. Only the explicit **Quit FleetMesh** action terminates the process.
+
+Settings owns item-level scope. Fleet and Doctor intentionally render only
+managed targets, while Settings joins the manifest and fresh local observations
+to show both Managed and Available items. Scope writes use compare-and-swap on
+the manifest revision and never execute a product installer.
+
 The command center is hosted in SwiftUI but anchored by a named native
 `NSStatusItem`. FleetMesh seeds only its own initial placement preference and
 preserves later user placement; it never rearranges another app's menu-bar item.

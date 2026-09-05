@@ -40,7 +40,7 @@ final class DeviceSyncStatusItemController: NSObject {
         popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
-        popover.contentSize = NSSize(width: 350, height: 396)
+        popover.contentSize = NSSize(width: 350, height: 446)
 
         super.init()
 
@@ -313,7 +313,7 @@ struct DeviceSyncMenuBarView: View {
             HStack(spacing: 7) {
                 Image(systemName: "clock")
                 if let lastScanAt = summary.lastScanAt {
-                    Text("Last scan ") + Text(lastScanAt, style: .relative)
+                    Text("Last scan \(FleetDateFormatting.relative(lastScanAt))")
                 } else {
                     Text("No successful scan yet")
                 }
@@ -348,7 +348,7 @@ struct DeviceSyncMenuBarView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(store.isRefreshing || store.isDoctorRunning)
+            .disabled(store.isBusy)
             .accessibilityIdentifier("devicesync.menu.scan")
 
             HStack(spacing: 10) {
@@ -370,7 +370,16 @@ struct DeviceSyncMenuBarView: View {
             }
             .buttonStyle(.bordered)
 
-            Text("Repairs open in the full Doctor for evidence, confirmation, and post-repair proof.")
+            Button {
+                openSection(.settings)
+            } label: {
+                Label("Manage fleet items", systemImage: "checklist")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("devicesync.menu.manageItems")
+
+            Text("Close the window anytime—FleetMesh stays here. Repairs open in the full Doctor for review and proof.")
                 .font(.caption2)
                 .foregroundStyle(DSTheme.inkMuted)
                 .fixedSize(horizontal: false, vertical: true)

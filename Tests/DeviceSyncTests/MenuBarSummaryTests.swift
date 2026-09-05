@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import DeviceSync
@@ -83,6 +84,23 @@ struct MenuBarSummaryTests {
         #expect(!DeviceSyncStatusItemPlacement.prepare(defaults: defaults))
         #expect(defaults.integer(forKey: DeviceSyncStatusItemPlacement.preferenceKey) == 333)
         #expect(defaults.integer(forKey: unrelatedKey) == 777)
+    }
+
+    @Test
+    func freshTimestampsReadNaturally() {
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        #expect(FleetDateFormatting.relative(now, now: now) == "just now")
+        #expect(FleetDateFormatting.relative(now.addingTimeInterval(-30), now: now) == "just now")
+        #expect(FleetDateFormatting.relative(now.addingTimeInterval(-120), now: now).contains("2"))
+    }
+
+    @Test
+    @MainActor
+    func closingLastWindowDoesNotTerminateMenuBarApp() {
+        let delegate = DeviceSyncAppDelegate()
+
+        #expect(!delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
     }
 
     private func summary(_ verdict: FleetVerdict) -> MenuBarSummary {

@@ -7,7 +7,8 @@ one explicit baseline, and turns drift into guarded repair or a clear decision.
 The installed app has two native surfaces backed by the same live state:
 
 - A menu-bar command center for fleet posture, scan freshness, counts, and a
-  one-click scan of this Mac.
+  one-click scan of this Mac. Closing the full window does not quit FleetMesh;
+  the command center remains available until **Quit FleetMesh** is chosen.
 - A singleton full app for machine evidence, bootstrap planning, settings, and
   Doctor's guarded repair workflow. Menu-bar repair requests always open the
   full Doctor; repairs never execute inside the popover.
@@ -50,11 +51,22 @@ executable. Doctor will not overwrite local source work or themes, pull or
 switch an unapproved checkout, repair another Mac remotely, or change the fleet
 baseline. Every attempted repair ends with a new observed snapshot.
 
-## What the first release tracks
+## Managed items
+
+Settings → **Managed items** is the fleet-wide scope editor. Removing an item
+stops FleetMesh from comparing, bootstrapping, or offering Doctor actions for
+it. The app, source checkout, and redacted observed evidence remain untouched,
+and an eligible discovered item can be added again from the same list.
+
+Each change requires confirmation, captures fresh local evidence, and writes
+only if the displayed manifest revision is still current. This prevents a Mac
+with stale Settings state from overwriting a newer scope decision.
+
+FleetMesh can discover:
 
 - ai-continuum CLI and source checkout
 - AuthBar, Stow, Murmr Voice, Model Bridge, Kiro Crew, Codex Desktop, Codex
-  CLI, and Codex Voice
+  CLI, and Codex Voice; discovery does not mean an item is currently managed
 - Codex, Warp, and Kiro Crew theme sets by filename and SHA-256 fingerprint
 - harness-sync revision and local-change posture
 - macOS version, build, model identifier, architecture, and snapshot freshness
@@ -97,11 +109,14 @@ Headless verification:
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --check
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --snapshot
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --adopt-baseline
+/Applications/FleetMesh.app/Contents/MacOS/DeviceSync --add-to-scope <component-id>
+/Applications/FleetMesh.app/Contents/MacOS/DeviceSync --remove-from-scope <component-id>
 ```
 
 The installer registers a per-user LaunchAgent that publishes a snapshot at
 login and every six hours. `--adopt-baseline` is an explicit operator action;
-scheduled runs never change desired state.
+scheduled runs never change desired state. Add/remove commands are likewise
+explicit actions and use revision-checked atomic manifest writes.
 
 MeshClaw is retired. New writers publish Kiro Crew package/runtime and native
 theme evidence, and readers ignore the retired `meshclaw-themes` component ID

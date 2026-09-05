@@ -12,9 +12,11 @@ final class FleetStore {
     private(set) var issues: [FleetIssue] = []
     private(set) var isRefreshing = false
     private(set) var isDoctorRunning = false
+    private(set) var isUpdatingScope = false
     private(set) var activeDoctorComponentID: String?
     private(set) var doctorRuns: [String: DoctorRunRecord] = [:]
     private(set) var lastError: String?
+    private(set) var lastActionMessage: String?
     private(set) var lastRefreshAt: Date?
 
     var selectedMachineID: String?
@@ -50,6 +52,33 @@ final class FleetStore {
 
     var fleetRootURL: URL? {
         localState.map { URL(fileURLWithPath: $0.fleetRootPath, isDirectory: true) }
+    }
+
+    var isBusy: Bool {
+        isRefreshing || isDoctorRunning || isUpdatingScope
+    }
+
+    var fleetScopeItems: [FleetScopeItem] {
+        var observations: [String: ComponentObservation] = [:]
+        for observation in localSnapshot?.components ?? []
+            where ComponentLifecycle.isActive(observation.id) {
+            observations[observation.id] = observation
+        }
+        var targets: [String: ManifestTarget] = [:]
+        for target in manifest?.activeTargets ?? [] {
+            targets[target.id] = target
+        }
+        return Set(observations.keys).union(targets.keys)
+            .map { componentID in
+                FleetScopeItem(
+                    observation: observations[componentID],
+                    target: targets[componentID]
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.isManaged != rhs.isManaged { return lhs.isManaged }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
     }
 
     var filteredAssessments: [MachineAssessment] {
@@ -100,9 +129,10 @@ final class FleetStore {
     }
 
     func refresh() async {
-        guard !isRefreshing && !isDoctorRunning else { return }
+        guard !isBusy else { return }
         isRefreshing = true
         lastError = nil
+        lastActionMessage = nil
         defer { isRefreshing = false }
 
         do {
@@ -113,17 +143,74 @@ final class FleetStore {
     }
 
     func adoptThisMacAsBaseline() async {
-        guard let snapshot = localSnapshot, let fleetRootURL else { return }
+        guard !isBusy, let snapshot = localSnapshot, let fleetRootURL else { return }
+        isUpdatingScope = true
+        lastError = nil
+        lastActionMessage = nil
+        defer { isUpdatingScope = false }
         do {
             let newManifest = FleetManifest(snapshot: snapshot)
             try FleetRepository(rootURL: fleetRootURL).saveManifest(newManifest)
             await reloadFleet()
+            lastError = nil
+            lastActionMessage = "Fleet baseline replaced with this Mac's fresh observed state."
         } catch {
             lastError = error.localizedDescription
+            lastActionMessage = nil
+        }
+    }
+
+    func setComponentManaged(componentID: String, managed: Bool) async {
+        guard !isBusy,
+              let displayedManifest = manifest,
+              let fleetRootURL else { return }
+
+        isUpdatingScope = true
+        lastError = nil
+        lastActionMessage = nil
+        defer { isUpdatingScope = false }
+
+        do {
+            let state = try localRepository.loadOrCreate()
+            localState = state
+            let snapshot = await inventory.capture(
+                machineID: state.machineID,
+                displayName: state.displayName
+            )
+            localSnapshot = snapshot
+
+            let repository = FleetRepository(rootURL: fleetRootURL)
+            _ = try repository.publish(snapshot)
+            let updatedManifest = try displayedManifest.settingManaged(
+                componentID: componentID,
+                managed: managed,
+                observation: snapshot.component(componentID),
+                updatedByMachineID: state.machineID
+            )
+            try repository.saveManifest(
+                updatedManifest,
+                replacingRevision: displayedManifest.revision
+            )
+
+            let read = repository.load()
+            apply(read: read, currentSnapshot: snapshot)
+            lastRefreshAt = Date()
+            let name = FleetScopeItem(
+                observation: snapshot.component(componentID),
+                target: updatedManifest.target(componentID) ?? displayedManifest.target(componentID)
+            ).name
+            lastActionMessage = managed
+                ? "\(name) is now managed across the fleet."
+                : "\(name) was removed from fleet scope. Nothing was uninstalled or deleted."
+        } catch {
+            lastError = error.localizedDescription
+            lastActionMessage = nil
+            await reloadFleet()
         }
     }
 
     func chooseFleetFolder() async {
+        guard !isBusy else { return }
         let panel = NSOpenPanel()
         panel.title = "Choose FleetMesh Fleet Folder"
         panel.prompt = "Use Folder"
@@ -138,6 +225,7 @@ final class FleetStore {
             await refresh()
         } catch {
             lastError = error.localizedDescription
+            lastActionMessage = nil
         }
     }
 
@@ -147,11 +235,16 @@ final class FleetStore {
     }
 
     func setMachineDisplayName(_ name: String) async {
+        guard !isBusy else { return }
+        lastError = nil
+        lastActionMessage = nil
         do {
             localState = try localRepository.updatingDisplayName(name)
             await refresh()
+            lastActionMessage = "This Mac is now named \(localState?.displayName ?? name) in fleet reports."
         } catch {
             lastError = error.localizedDescription
+            lastActionMessage = nil
         }
     }
 
@@ -168,7 +261,7 @@ final class FleetStore {
     }
 
     func repair(componentID: String, targetMachineID: String) async {
-        guard !isDoctorRunning && !isRefreshing else { return }
+        guard !isBusy else { return }
         let startedAt = Date()
         let originalName = selectedAssessment?.drifts
             .first { $0.componentID == componentID }?.name ?? componentID
@@ -176,6 +269,7 @@ final class FleetStore {
         isDoctorRunning = true
         activeDoctorComponentID = componentID
         lastError = nil
+        lastActionMessage = nil
         doctorRuns[componentID] = DoctorRunRecord(
             componentID: componentID,
             componentName: originalName,

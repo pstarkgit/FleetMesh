@@ -19,13 +19,8 @@ struct DeviceSyncApp: App {
             print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current)")
             exit(0)
         }
-        if arguments.contains("--check")
-            || arguments.contains("--snapshot")
-            || arguments.contains("--adopt-baseline") {
-            Self.runHeadless(
-                snapshotOnly: arguments.contains("--snapshot"),
-                adoptBaseline: arguments.contains("--adopt-baseline")
-            )
+        if let operation = HeadlessOperation(arguments: arguments) {
+            Self.runHeadless(operation: operation)
         }
     }
 
@@ -49,7 +44,7 @@ struct DeviceSyncApp: App {
         }
     }
 
-    private static func runHeadless(snapshotOnly: Bool, adoptBaseline: Bool) -> Never {
+    private static func runHeadless(operation: HeadlessOperation) -> Never {
         let semaphore = DispatchSemaphore(value: 0)
         Task.detached {
             defer { semaphore.signal() }
@@ -64,8 +59,8 @@ struct DeviceSyncApp: App {
                     rootURL: URL(fileURLWithPath: state.fleetRootPath, isDirectory: true)
                 )
                 let url = try repository.publish(snapshot)
-                if adoptBaseline
-                    || (!snapshotOnly
+                if operation == .adoptBaseline
+                    || (operation == .check
                         && !repository.manifestExists
                         && LocalStateRepository.maySeedInitialManifest(
                             state: state,
@@ -73,14 +68,36 @@ struct DeviceSyncApp: App {
                         )) {
                     try repository.saveManifest(FleetManifest(snapshot: snapshot))
                 }
-                let read = repository.load()
+                var read = repository.load()
+                if case .setManaged(let componentID, let managed) = operation {
+                    guard let manifest = read.manifest else {
+                        throw HeadlessOperationError.missingManifest
+                    }
+                    let updated = try manifest.settingManaged(
+                        componentID: componentID,
+                        managed: managed,
+                        observation: snapshot.component(componentID),
+                        updatedByMachineID: state.machineID
+                    )
+                    try repository.saveManifest(
+                        updated,
+                        replacingRevision: manifest.revision
+                    )
+                    read = repository.load()
+                }
                 let assessment = DriftEngine().assess(snapshot: snapshot, manifest: read.manifest)
-                if snapshotOnly {
+                switch operation {
+                case .snapshot:
                     print("snapshot: \(url.path)")
-                } else if adoptBaseline {
+                case .adoptBaseline:
                     print("baseline: \(repository.manifestURL.path)")
                     print("targets: \(read.manifest?.activeTargets.count ?? 0)")
-                } else {
+                case .setManaged(let componentID, let managed):
+                    print("scope: \(componentID) \(managed ? "managed" : "unmanaged")")
+                    print("baseline: \(repository.manifestURL.path)")
+                    print("targets: \(read.manifest?.activeTargets.count ?? 0)")
+                    print("snapshot: \(url.path)")
+                case .check:
                     print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current): OK")
                     print("machine: \(snapshot.name) (\(snapshot.hostName))")
                     print("fleet folder: \(repository.rootURL.path)")
@@ -94,6 +111,39 @@ struct DeviceSyncApp: App {
         }
         semaphore.wait()
         exit(0)
+    }
+}
+
+enum HeadlessOperation: Equatable {
+    case check
+    case snapshot
+    case adoptBaseline
+    case setManaged(componentID: String, managed: Bool)
+
+    init?(arguments: [String]) {
+        if arguments.contains("--check") {
+            self = .check
+        } else if arguments.contains("--snapshot") {
+            self = .snapshot
+        } else if arguments.contains("--adopt-baseline") {
+            self = .adoptBaseline
+        } else if let index = arguments.firstIndex(of: "--add-to-scope"),
+                  arguments.indices.contains(index + 1) {
+            self = .setManaged(componentID: arguments[index + 1], managed: true)
+        } else if let index = arguments.firstIndex(of: "--remove-from-scope"),
+                  arguments.indices.contains(index + 1) {
+            self = .setManaged(componentID: arguments[index + 1], managed: false)
+        } else {
+            return nil
+        }
+    }
+}
+
+private enum HeadlessOperationError: LocalizedError {
+    case missingManifest
+
+    var errorDescription: String? {
+        "No fleet baseline is available. Connect the shared fleet folder before changing scope."
     }
 }
 
@@ -133,25 +183,42 @@ final class DeviceSyncAppState {
         navigation.open(section)
         openMainWindow?()
         NSApp.activate(ignoringOtherApps: true)
+        bringMainWindowForward(attemptsRemaining: 12)
+    }
 
-        // Opening a SwiftUI scene is asynchronous. Bring the singleton forward
-        // on the next run loop and restore it if it was minimized.
-        DispatchQueue.main.async {
-            guard let window = NSApp.windows.first(where: {
-                $0.title == FleetMeshIdentity.productName
-            }) else {
-                return
-            }
+    private func bringMainWindowForward(attemptsRemaining: Int) {
+        guard attemptsRemaining > 0 else { return }
+        if let window = NSApp.windows.first(where: {
+            $0.title == FleetMeshIdentity.productName
+        }) {
             window.deminiaturize(nil)
             window.makeKeyAndOrderFront(nil)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.bringMainWindowForward(attemptsRemaining: attemptsRemaining - 1)
         }
     }
 }
 
 @MainActor
-private final class DeviceSyncAppDelegate: NSObject, NSApplicationDelegate {
+final class DeviceSyncAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DeviceSyncAppState.shared.installStatusItem()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        if !flag {
+            DeviceSyncAppState.shared.show(.fleet)
+        }
+        return true
     }
 }
 

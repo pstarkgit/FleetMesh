@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.6 — 2026-09-04
+
+- Added explicit Managed Items controls in Settings so individual apps, tools,
+  configurations, and themes can enter or leave fleet scope without replacing
+  the entire baseline.
+- Kept removed items discoverable as observed evidence while excluding them
+  from daily Fleet posture, Bootstrap work, Doctor findings, and attention
+  counts; scope changes never uninstall apps or delete source.
+- Protected item-level baseline edits with fresh local evidence, atomic writes,
+  and manifest-revision checks so a stale Mac cannot overwrite newer scope.
+- Added guarded `--add-to-scope` and `--remove-from-scope` operator commands for
+  recovery and automation through the same manifest contract as the UI.
+- Kept the menu-bar command center alive after the full window closes, made
+  Dock/menu-bar reopening resilient to asynchronous SwiftUI window creation,
+  and documented the lifecycle directly in the popover.
+- Improved timestamps, shared busy states, success/error feedback, managed-only
+  Fleet copy, and direct navigation to Managed Items.
+
 ## 0.1.5 — 2026-09-04
 
 - Renamed the visible product and installed bundle to FleetMesh while retaining

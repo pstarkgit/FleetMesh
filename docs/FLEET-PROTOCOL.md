@@ -14,6 +14,15 @@ Device Sync/  # legacy compatibility folder retained by FleetMesh
 first observed Mac when no manifest exists. Every later replacement is an
 explicit in-app action.
 
+Item-level add/remove actions are also explicit desired-state changes. They
+capture fresh evidence, preserve every unrelated target, assign a new manifest
+revision, and compare the previously displayed revision with the file currently
+on disk before atomic replacement. A stale writer fails closed and reloads.
+
+Removing a target does not remove its observation from machine reports. Readers
+may present that evidence as available/unmanaged in Settings, but it contributes
+no drift, Bootstrap work, Doctor finding, or attention count.
+
 Each machine owns exactly one snapshot file. Its stable ID is a random UUID
 stored in local Application Support; it is not derived from a serial number,
 hardware UUID, account, or hostname.

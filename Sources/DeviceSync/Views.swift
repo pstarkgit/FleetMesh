@@ -150,7 +150,7 @@ private struct MachineSidebarRow: View {
 
 struct FleetView: View {
     @Bindable var store: FleetStore
-    let onOpenBootstrap: () -> Void
+    let onOpenDoctor: () -> Void
 
     var body: some View {
         ScrollView {
@@ -195,7 +195,7 @@ struct FleetView: View {
                 Label(store.isRefreshing ? "Scanning…" : "Scan this Mac", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.borderedProminent)
-            .disabled(store.isRefreshing)
+            .disabled(store.isBusy)
         }
     }
 
@@ -257,12 +257,22 @@ struct FleetView: View {
 
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 12) {
-                    SectionTitle(title: "Software & configuration", subtitle: "Observed evidence compared with the fleet baseline")
-                    ForEach(assessment.drifts) { drift in
-                        DriftRow(
-                            drift: drift,
-                            observation: assessment.snapshot.component(drift.componentID)
+                    SectionTitle(title: "Managed software & configuration", subtitle: "Only items explicitly included in the fleet baseline")
+                    if assessment.managedDrifts.isEmpty {
+                        ContentUnavailableView(
+                            "No managed items",
+                            systemImage: "checklist.unchecked",
+                            description: Text("Add apps, tools, or themes from Settings → Managed items.")
                         )
+                        .frame(maxWidth: .infinity, minHeight: 180)
+                        .deviceCard()
+                    } else {
+                        ForEach(assessment.managedDrifts) { drift in
+                            DriftRow(
+                                drift: drift,
+                                observation: assessment.snapshot.component(drift.componentID)
+                            )
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -273,7 +283,7 @@ struct FleetView: View {
 
                     Button {
                         store.selectedMachineID = assessment.snapshot.machineID
-                        onOpenBootstrap()
+                        onOpenDoctor()
                     } label: {
                         Label("Open Doctor", systemImage: "stethoscope")
                             .frame(maxWidth: .infinity)
@@ -637,7 +647,7 @@ struct DoctorView: View {
                 Label(store.isRefreshing ? "Scanning…" : "Scan this Mac", systemImage: "stethoscope")
             }
             .buttonStyle(.borderedProminent)
-            .disabled(store.isRefreshing || store.isDoctorRunning)
+            .disabled(store.isBusy)
         }
     }
 }
@@ -1063,6 +1073,7 @@ struct SettingsView: View {
     @Bindable var store: FleetStore
     @State private var confirmBaseline = false
     @State private var machineNameDraft = ""
+    @State private var pendingScopeChange: PendingScopeChange?
 
     var body: some View {
         ScrollView {
@@ -1078,6 +1089,10 @@ struct SettingsView: View {
                         .foregroundStyle(DSTheme.inkSoft)
                 }
 
+                if let error = store.lastError {
+                    IssueBanner(title: "Settings change failed", detail: error, color: DSTheme.red)
+                }
+
                 VStack(alignment: .leading, spacing: 14) {
                     SectionTitle(title: "This Mac", subtitle: "Human-readable fleet name; the stable ID remains a random local UUID")
                     HStack {
@@ -1086,7 +1101,10 @@ struct SettingsView: View {
                         Button("Save name") {
                             Task { await store.setMachineDisplayName(machineNameDraft) }
                         }
-                        .disabled(machineNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(
+                            store.isBusy
+                                || machineNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        )
                     }
                     Text("Host: \(store.localSnapshot?.hostName ?? "Not scanned")")
                         .font(.caption)
@@ -1105,8 +1123,9 @@ struct SettingsView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                     HStack {
                         Button("Choose folder…") { Task { await store.chooseFleetFolder() } }
+                            .disabled(store.isBusy)
                         Button("Reveal in Finder") { store.revealFleetFolder() }
-                            .disabled(store.fleetRootURL == nil)
+                            .disabled(store.fleetRootURL == nil || store.isBusy)
                     }
                     VStack(alignment: .leading, spacing: 7) {
                         Label("fleet-manifest.json — in-scope products and desired state", systemImage: "scope")
@@ -1132,13 +1151,72 @@ struct SettingsView: View {
                         Button("Use this Mac as baseline", role: .destructive) {
                             confirmBaseline = true
                         }
-                        .disabled(store.localSnapshot == nil)
+                        .disabled(store.localSnapshot == nil || store.isBusy)
                     }
                     Text("New Macs must connect OneDrive before FleetMesh's first scan, then read this manifest and publish their own evidence. Do not use a new Mac as baseline unless you intend to replace fleet scope.")
                         .font(.caption)
                         .foregroundStyle(DSTheme.inkSoft)
                 }
                 .deviceCard()
+
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .top) {
+                        SectionTitle(
+                            title: "Managed items",
+                            subtitle: "Choose what FleetMesh compares, bootstraps, and offers to Doctor"
+                        )
+                        Spacer()
+                        if store.isUpdatingScope {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else if let manifest = store.manifest {
+                            Text("\(manifest.activeTargets.count) managed")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(DSTheme.blue)
+                        }
+                    }
+
+                    Text("Removing an item changes fleet scope only. It does not uninstall the app, delete source, or erase observed evidence. Add it again from this list when you want FleetMesh to manage it.")
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkSoft)
+
+                    if store.manifest == nil {
+                        ContentUnavailableView(
+                            "No fleet baseline",
+                            systemImage: "scope",
+                            description: Text("Connect the shared fleet folder or create a verified baseline before changing scope.")
+                        )
+                        .frame(maxWidth: .infinity, minHeight: 150)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(Array(store.fleetScopeItems.enumerated()), id: \.element.id) { index, item in
+                                ManagedItemRow(
+                                    item: item,
+                                    isBusy: store.isBusy
+                                ) {
+                                    pendingScopeChange = PendingScopeChange(
+                                        item: item,
+                                        managed: !item.isManaged
+                                    )
+                                }
+                                if index < store.fleetScopeItems.count - 1 {
+                                    Divider().padding(.leading, 44)
+                                }
+                            }
+                        }
+                        .background(DSTheme.canvas)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(DSTheme.line, lineWidth: 1)
+                        }
+                    }
+                }
+                .deviceCard()
+
+                if let message = store.lastActionMessage {
+                    ActionBanner(message: message)
+                }
 
                 VStack(alignment: .leading, spacing: 12) {
                     SectionTitle(title: "Privacy contract", subtitle: "What leaves this Mac in a fleet snapshot")
@@ -1162,6 +1240,33 @@ struct SettingsView: View {
         } message: {
             Text("Every machine will be compared with the versions and configuration fingerprints observed on this Mac. No software will be installed by this action.")
         }
+        .confirmationDialog(
+            scopeConfirmationTitle,
+            isPresented: Binding(
+                get: { pendingScopeChange != nil },
+                set: { if !$0 { pendingScopeChange = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let change = pendingScopeChange {
+                Button(change.managed ? "Add to fleet scope" : "Remove from fleet scope", role: change.managed ? nil : .destructive) {
+                    pendingScopeChange = nil
+                    Task {
+                        await store.setComponentManaged(
+                            componentID: change.item.id,
+                            managed: change.managed
+                        )
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingScopeChange = nil }
+        } message: {
+            if let change = pendingScopeChange {
+                Text(change.managed
+                    ? "FleetMesh will use this Mac's fresh observed state as the desired version or fingerprint for \(change.item.name). No software will be installed."
+                    : "FleetMesh will stop comparing, bootstrapping, and repairing \(change.item.name) across the fleet. The app and source checkout will remain untouched.")
+            }
+        }
         .onAppear { synchronizeMachineName() }
         .onChange(of: store.localSnapshot?.name) { _, _ in synchronizeMachineName() }
     }
@@ -1169,6 +1274,86 @@ struct SettingsView: View {
     private func synchronizeMachineName() {
         guard machineNameDraft.isEmpty else { return }
         machineNameDraft = store.localState?.displayName ?? store.localSnapshot?.name ?? ""
+    }
+
+    private var scopeConfirmationTitle: String {
+        guard let change = pendingScopeChange else { return "Change fleet scope?" }
+        return change.managed
+            ? "Add \(change.item.name) to fleet scope?"
+            : "Remove \(change.item.name) from fleet scope?"
+    }
+}
+
+private struct PendingScopeChange {
+    let item: FleetScopeItem
+    let managed: Bool
+}
+
+private struct ManagedItemRow: View {
+    let item: FleetScopeItem
+    let isBusy: Bool
+    let changeScope: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(item.isManaged ? DSTheme.green : DSTheme.inkMuted)
+                .frame(width: 32, height: 32)
+                .background((item.isManaged ? DSTheme.green : DSTheme.inkMuted).opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 7) {
+                    Text(item.name)
+                        .font(.subheadline.weight(.semibold))
+                    Text(item.kind.label.uppercased())
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(DSTheme.inkMuted)
+                }
+                Text(item.observedSummary)
+                    .font(.caption)
+                    .foregroundStyle(DSTheme.inkMuted)
+            }
+            Spacer()
+            Text(item.isManaged ? "Managed" : "Available")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(item.isManaged ? DSTheme.green : DSTheme.inkMuted)
+            Button(item.isManaged ? "Remove" : "Add", action: changeScope)
+                .buttonStyle(.bordered)
+                .disabled(isBusy || (!item.isManaged && !item.canAdd))
+                .accessibilityLabel("\(item.isManaged ? "Remove" : "Add") \(item.name) \(item.isManaged ? "from" : "to") fleet scope")
+        }
+        .padding(12)
+    }
+
+    private var symbol: String {
+        switch item.kind {
+        case .application: "app.fill"
+        case .commandLineTool: "terminal.fill"
+        case .service: "wave.3.right.circle.fill"
+        case .configuration: "slider.horizontal.3"
+        case .theme: "paintpalette.fill"
+        }
+    }
+}
+
+private struct ActionBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(DSTheme.green)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(DSTheme.inkSoft)
+            Spacer()
+        }
+        .padding(13)
+        .background(DSTheme.green.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(DSTheme.green.opacity(0.22)) }
     }
 }
 
@@ -1220,7 +1405,5 @@ private struct SectionTitle: View {
 }
 
 private func relativeDate(_ date: Date) -> String {
-    let formatter = RelativeDateTimeFormatter()
-    formatter.unitsStyle = .full
-    return formatter.localizedString(for: date, relativeTo: Date())
+    FleetDateFormatting.relative(date)
 }

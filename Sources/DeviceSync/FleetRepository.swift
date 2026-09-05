@@ -59,6 +59,23 @@ struct FleetRepository: Sendable {
         try write(manifest, to: manifestURL)
     }
 
+    func saveManifest(
+        _ manifest: FleetManifest,
+        replacingRevision expectedRevision: String
+    ) throws {
+        guard fileManager.fileExists(atPath: manifestURL.path) else {
+            throw FleetRepositoryError.missingManifest
+        }
+        let current = try decode(FleetManifest.self, from: manifestURL)
+        guard current.schemaVersion <= FleetManifest.currentSchemaVersion else {
+            throw FleetRepositoryError.futureSchema(current.schemaVersion)
+        }
+        guard current.revision == expectedRevision else {
+            throw FleetRepositoryError.manifestChanged
+        }
+        try saveManifest(manifest)
+    }
+
     func load() -> FleetReadResult {
         var issues: [FleetIssue] = []
         let manifest: FleetManifest?
@@ -149,6 +166,8 @@ struct FleetRepository: Sendable {
 enum FleetRepositoryError: LocalizedError {
     case invalidMachineID
     case futureSchema(Int)
+    case missingManifest
+    case manifestChanged
 
     var errorDescription: String? {
         switch self {
@@ -156,6 +175,10 @@ enum FleetRepositoryError: LocalizedError {
             "The machine report has an invalid privacy-preserving identifier."
         case .futureSchema(let version):
             "Schema version \(version) is newer than this FleetMesh build supports."
+        case .missingManifest:
+            "The fleet baseline disappeared before the change could be saved. Scan again before changing scope."
+        case .manifestChanged:
+            "Another Mac changed the fleet baseline. FleetMesh reloaded it instead of overwriting newer desired state. Review the latest scope and try again."
         }
     }
 }
