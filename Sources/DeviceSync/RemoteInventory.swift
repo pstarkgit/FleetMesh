@@ -246,9 +246,15 @@ struct SSHRemoteInventoryService: RemoteInventoryCapturing {
             kind: kind,
             status: status,
             installedVersion: normalizedVersion(values[prefix + "version"]),
-            sourceRevision: values[prefix + "sourceRevision"]?.nilIfBlank,
-            sourceBranch: values[prefix + "sourceBranch"]?.nilIfBlank,
-            sourceDirty: bool(values[prefix + "sourceDirty"]),
+            sourceRevision: kind == .configuration
+                ? values[prefix + "sourceRevision"]?.nilIfBlank
+                : nil,
+            sourceBranch: kind == .configuration
+                ? values[prefix + "sourceBranch"]?.nilIfBlank
+                : nil,
+            sourceDirty: kind == .configuration
+                ? bool(values[prefix + "sourceDirty"])
+                : nil,
             configurationFingerprint: id == "harness-sync"
                 ? values[prefix + "sourceRevision"]?.nilIfBlank
                 : nil,
@@ -355,10 +361,6 @@ else
   emit component.ai-continuum.status missing
   emit component.ai-continuum.running false
 fi
-for checkout in "$HOME/code/ai-continuum"; do
-  [ -d "$checkout/.git" ] && git_state ai-continuum "$checkout" && break
-done
-
 codex="$(find_executable "$HOME/.toolbox/bin/codex" "$HOME/.local/bin/codex" /usr/local/bin/codex 2>/dev/null || true)"
 if [ -n "$codex" ]; then
   emit component.codex-cli.status installed

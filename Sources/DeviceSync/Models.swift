@@ -112,6 +112,48 @@ enum ObservationStatus: String, Codable, Sendable {
     case unknown
 }
 
+enum ProductVersionAuthority: String, Codable, Hashable, Sendable {
+    case sparkleAppcast
+
+    var label: String {
+        switch self {
+        case .sparkleAppcast: "Product update feed"
+        }
+    }
+}
+
+enum ProductVersionCheckStatus: String, Codable, Hashable, Sendable {
+    case verified
+    case unavailable
+}
+
+struct ProductVersionCheck: Codable, Hashable, Sendable {
+    let status: ProductVersionCheckStatus
+    let authority: ProductVersionAuthority
+    let latestVersion: String?
+
+    static func verified(
+        version: String,
+        authority: ProductVersionAuthority
+    ) -> ProductVersionCheck {
+        ProductVersionCheck(
+            status: .verified,
+            authority: authority,
+            latestVersion: version
+        )
+    }
+
+    static func unavailable(
+        authority: ProductVersionAuthority
+    ) -> ProductVersionCheck {
+        ProductVersionCheck(
+            status: .unavailable,
+            authority: authority,
+            latestVersion: nil
+        )
+    }
+}
+
 struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let name: String
@@ -120,9 +162,12 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
     let installedVersion: String?
     let build: String?
     let installedRevision: String?
-    /// Version declared by the product's own source checkout. This is separate
-    /// from the installed version so FleetMesh can track the newest deployed,
-    /// clean repository build without rewriting desired-state JSON on a scan.
+    /// Product-owned latest-version evidence. Ordinary fleet posture may use
+    /// this value, but never a developer checkout, to advance a software target.
+    let productVersionCheck: ProductVersionCheck?
+    /// Developer-checkout evidence is legacy snapshot compatibility and
+    /// explicit Doctor-preflight context. Drift evaluation ignores it for
+    /// software, and routine scans do not collect or publish it.
     let sourceVersion: String?
     let sourceRevision: String?
     let sourceBranch: String?
@@ -142,6 +187,7 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
         installedVersion: String? = nil,
         build: String? = nil,
         installedRevision: String? = nil,
+        productVersionCheck: ProductVersionCheck? = nil,
         sourceVersion: String? = nil,
         sourceRevision: String? = nil,
         sourceBranch: String? = nil,
@@ -160,6 +206,7 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
         self.installedVersion = installedVersion
         self.build = build
         self.installedRevision = installedRevision
+        self.productVersionCheck = productVersionCheck
         self.sourceVersion = sourceVersion
         self.sourceRevision = sourceRevision
         self.sourceBranch = sourceBranch
@@ -173,7 +220,58 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
     }
 
     var primaryVersion: String {
-        installedVersion ?? installedRevision ?? sourceRevision ?? "Not observed"
+        if kind == .configuration || kind == .theme {
+            return configurationFingerprint ?? sourceRevision ?? "Not observed"
+        }
+        return installedVersion ?? installedRevision ?? "Not observed"
+    }
+
+    func removingSoftwareCheckoutEvidence() -> ComponentObservation {
+        guard kind != .configuration && kind != .theme else { return self }
+        return ComponentObservation(
+            id: id,
+            name: name,
+            kind: kind,
+            status: status,
+            installedVersion: installedVersion,
+            build: build,
+            installedRevision: installedRevision,
+            productVersionCheck: productVersionCheck,
+            configurationFingerprint: configurationFingerprint,
+            items: items,
+            isRunning: isRunning,
+            evidence: evidence
+        )
+    }
+
+    func addingSoftwareCheckoutEvidence(
+        version: String?,
+        revision: String,
+        branch: String?,
+        dirty: Bool,
+        sourceTree: String,
+        installedTree: String?
+    ) -> ComponentObservation {
+        ComponentObservation(
+            id: id,
+            name: name,
+            kind: kind,
+            status: status,
+            installedVersion: installedVersion,
+            build: build,
+            installedRevision: installedRevision,
+            productVersionCheck: productVersionCheck,
+            sourceVersion: version,
+            sourceRevision: revision,
+            sourceBranch: branch,
+            sourceDirty: dirty,
+            sourceTree: sourceTree,
+            installedTree: installedTree,
+            configurationFingerprint: configurationFingerprint,
+            items: items,
+            isRunning: isRunning,
+            evidence: evidence
+        )
     }
 }
 
@@ -232,6 +330,40 @@ struct MachineSnapshot: Codable, Identifiable, Hashable, Sendable {
         components.first { $0.id == id }
     }
 
+    func removingSoftwareCheckoutEvidence() -> MachineSnapshot {
+        MachineSnapshot(
+            machineID: machineID,
+            name: name,
+            hostName: hostName,
+            modelIdentifier: modelIdentifier,
+            architecture: architecture,
+            osVersion: osVersion,
+            osBuild: osBuild,
+            platform: effectivePlatform,
+            capabilities: Array(effectiveCapabilities),
+            capturedAt: capturedAt,
+            deviceSyncVersion: deviceSyncVersion,
+            components: components.map { $0.removingSoftwareCheckoutEvidence() }
+        )
+    }
+
+    func replacingComponent(_ replacement: ComponentObservation) -> MachineSnapshot {
+        MachineSnapshot(
+            machineID: machineID,
+            name: name,
+            hostName: hostName,
+            modelIdentifier: modelIdentifier,
+            architecture: architecture,
+            osVersion: osVersion,
+            osBuild: osBuild,
+            platform: effectivePlatform,
+            capabilities: Array(effectiveCapabilities),
+            capturedAt: capturedAt,
+            deviceSyncVersion: deviceSyncVersion,
+            components: components.map { $0.id == replacement.id ? replacement : $0 }
+        )
+    }
+
     var effectivePlatform: DevicePlatform {
         // Schema-v1 reports were emitted only by the native Mac app.
         platform ?? .macOS
@@ -267,8 +399,9 @@ struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
         self.required = required
         self.defaultManaged = defaultManaged
         expectedVersion = observation.installedVersion
-        expectedInstalledRevision = observation.installedRevision
-        expectedSourceRevision = observation.sourceRevision
+        let exactConfiguration = observation.kind == .configuration || observation.kind == .theme
+        expectedInstalledRevision = exactConfiguration ? observation.installedRevision : nil
+        expectedSourceRevision = exactConfiguration ? observation.sourceRevision : nil
         expectedConfigurationFingerprint = observation.configurationFingerprint
         supportedPlatforms = Self.supportedPlatforms(
             for: observation.id,
@@ -616,8 +749,7 @@ struct FleetScopeItem: Identifiable, Hashable, Sendable {
                 return "\(count) file\(count == 1 ? "" : "s") observed"
             }
             if let version = observation.installedVersion
-                ?? observation.installedRevision
-                ?? observation.sourceRevision {
+                ?? observation.installedRevision {
                 return version
             }
             if let fingerprint = observation.configurationFingerprint {
@@ -995,19 +1127,19 @@ struct FleetManifest: Codable, Hashable, Sendable {
 
 }
 
-struct RepositoryBuildTarget: Hashable, Sendable {
-    let version: String
-    let installedRevision: String?
-    let sourceRevision: String
+struct ProductVersionTarget: Hashable, Sendable {
+    let status: ProductVersionCheckStatus
+    let version: String?
+    let authority: ProductVersionAuthority
 }
 
 enum FleetTargetBasis: String, Sendable {
-    case latestRepository
+    case latestRelease
     case savedBaseline
 
     var label: String {
         switch self {
-        case .latestRepository: "Latest repo"
+        case .latestRelease: "Latest available"
         case .savedBaseline: "Saved baseline"
         }
     }
@@ -1135,8 +1267,8 @@ struct ComponentDrift: Identifiable, Hashable, Sendable {
 
     var targetLabel: String {
         switch targetBasis {
-        case .latestRepository:
-            "Latest repo"
+        case .latestRelease:
+            "Latest available"
         case .savedBaseline:
             kind == .configuration || kind == .theme
                 ? "Saved baseline"

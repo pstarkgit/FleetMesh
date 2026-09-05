@@ -12,7 +12,7 @@ struct DoctorPlannerTests {
             name: "Murmr Voice",
             kind: .application,
             status: .installed,
-            installedVersion: "0.2.36",
+            installedVersion: "0.2.35",
             installedRevision: "aaaaaaaaaaaa",
             sourceVersion: "0.2.36",
             sourceRevision: "bbbbbbbbbbbb",
@@ -25,9 +25,9 @@ struct DoctorPlannerTests {
             kind: .application,
             state: .different,
             severity: .attention,
-            summary: "Installed/source divergence",
+            summary: "Installed version is behind",
             expected: "0.2.36",
-            observed: "0.2.36"
+            observed: "0.2.35"
         )
         let repairFinding = DoctorPlanner().finding(
             for: repairDrift,
@@ -103,19 +103,19 @@ struct DoctorPlannerTests {
             finding: nil
         ) == .none)
 
-        let repositoryDrift = ComponentDrift(
+        let releaseDrift = ComponentDrift(
             componentID: "codex-cli",
             name: "Codex CLI",
             kind: .commandLineTool,
             state: .different,
             severity: .attention,
-            summary: "Repository differs",
+            summary: "Latest available version differs",
             expected: "0.3.0",
             observed: "0.2.0",
-            targetBasis: .latestRepository
+            targetBasis: .latestRelease
         )
         #expect(InlineRemediationPolicy.action(
-            drift: repositoryDrift,
+            drift: releaseDrift,
             observation: clean,
             finding: nil
         ) == .none)
@@ -201,6 +201,19 @@ struct DoctorPlannerTests {
             current: dirty,
             requiresCleanSource: true
         ))
+        let missingSource = ComponentObservation(
+            id: "authbar",
+            name: "AuthBar",
+            kind: .application,
+            status: .installed,
+            installedVersion: "1.0.0",
+            evidence: "No checkout evidence"
+        )
+        #expect(!DoctorApproval.matchesPinnedSource(
+            approved: missingSource,
+            current: missingSource,
+            requiresCleanSource: true
+        ))
     }
     @Test
     func cleanOwnedDeploymentDriftIsRepairable() {
@@ -255,7 +268,8 @@ struct DoctorPlannerTests {
         let finding = DoctorPlanner().finding(
             for: drift,
             observation: observation,
-            target: ManifestTarget(observation: observation)
+            target: ManifestTarget(observation: observation),
+            enforceSourcePreflight: true
         )
 
         #expect(finding.disposition == .protected)
@@ -266,7 +280,66 @@ struct DoctorPlannerTests {
             drift: drift,
             observation: observation,
             finding: finding
-        ) == .updateCheckout)
+        ) == .none)
+    }
+
+    @Test
+    func sourceRepairPreflightRequiresVerifiedCheckoutAtSelectedVersion() {
+        let targetObservation = ComponentObservation(
+            id: "authbar",
+            name: "AuthBar",
+            kind: .application,
+            status: .installed,
+            installedVersion: "1.1.0",
+            evidence: "Version target"
+        )
+        let drift = ComponentDrift(
+            componentID: "authbar",
+            name: "AuthBar",
+            kind: .application,
+            state: .different,
+            severity: .attention,
+            summary: "Installed software is behind.",
+            expected: "1.1.0",
+            observed: "1.0.0"
+        )
+        let noCheckout = ComponentObservation(
+            id: "authbar",
+            name: "AuthBar",
+            kind: .application,
+            status: .installed,
+            installedVersion: "1.0.0",
+            evidence: "Installed app; checkout probe unavailable"
+        )
+
+        let missing = DoctorPlanner().finding(
+            for: drift,
+            observation: noCheckout,
+            target: ManifestTarget(observation: targetObservation),
+            enforceSourcePreflight: true
+        )
+        #expect(missing.disposition == .protected)
+        #expect(missing.detail.contains("could not prove a clean local checkout"))
+
+        let staleCheckout = ComponentObservation(
+            id: "authbar",
+            name: "AuthBar",
+            kind: .application,
+            status: .installed,
+            installedVersion: "1.0.0",
+            sourceVersion: "1.0.5",
+            sourceRevision: "bbbbbbbbbbbb",
+            sourceDirty: false,
+            evidence: "Clean checkout behind target"
+        )
+        let behind = DoctorPlanner().finding(
+            for: drift,
+            observation: staleCheckout,
+            target: ManifestTarget(observation: targetObservation),
+            enforceSourcePreflight: true
+        )
+        #expect(behind.disposition == .protected)
+        #expect(behind.detail.contains("does not contain the selected version target"))
     }
 
     @Test
@@ -285,17 +358,18 @@ struct DoctorPlannerTests {
             componentID: "authbar",
             name: "AuthBar",
             kind: .application,
-            state: .localChanges,
+            state: .different,
             severity: .attention,
-            summary: "Source checkout has local work.",
-            expected: "bbbbbbb",
-            observed: "bbbbbbbbbbbb"
+            summary: "Installed version is behind.",
+            expected: "2.0.0",
+            observed: "1.0.0"
         )
 
         let finding = DoctorPlanner().finding(
             for: drift,
             observation: observed,
-            target: ManifestTarget(observation: desired)
+            target: ManifestTarget(observation: desired),
+            enforceSourcePreflight: true
         )
 
         #expect(finding.disposition == .protected)
@@ -304,7 +378,7 @@ struct DoctorPlannerTests {
     }
 
     @Test
-    func unapprovedSourceRevisionRequiresDecision() {
+    func cleanDifferentSourceRevisionDoesNotDefineFleetAuthority() {
         let desired = authBarObservation(
             installedRevision: "bbbbbbb",
             sourceRevision: "bbbbbbbbbbbb",
@@ -322,9 +396,8 @@ struct DoctorPlannerTests {
             target: ManifestTarget(observation: desired)
         )
 
-        #expect(finding.disposition == .manual)
-        #expect(!finding.canRepair)
-        #expect(finding.title.contains("approved"))
+        #expect(finding.disposition == .repairable)
+        #expect(finding.canRepair)
     }
 
     @Test
@@ -353,11 +426,13 @@ struct DoctorPlannerTests {
     @Test
     func deploymentRepairCanBeProvedSeparatelyFromBaselineAlignment() {
         let before = authBarObservation(
+            installedVersion: "1.0.0",
             installedRevision: "aaaaaaa",
             sourceRevision: "bbbbbbbbbbbb",
             dirty: false
         )
         let after = authBarObservation(
+            installedVersion: "1.1.0",
             installedRevision: "bbbbbbb",
             sourceRevision: "bbbbbbbbbbbb",
             dirty: false
@@ -407,7 +482,12 @@ struct DoctorOrchestrationTests {
     @MainActor
     func remoteMachineCannotRunALocalRepair() async throws {
         let fixture = try DoctorFixture(
-            snapshots: [doctorSnapshot(installed: "bbbbbbb", source: "bbbbbbbbbbbb")]
+            snapshots: [doctorSnapshot(
+                installedVersion: "1.1.0",
+                installed: "bbbbbbb",
+                sourceVersion: "1.1.0",
+                source: "bbbbbbbbbbbb"
+            )]
         )
         defer { fixture.remove() }
         await fixture.store.start()
@@ -425,9 +505,16 @@ struct DoctorOrchestrationTests {
     @Test
     @MainActor
     func preflightLocalChangesStopBeforeExecution() async throws {
-        let baseline = doctorSnapshot(installed: "bbbbbbb", source: "bbbbbbbbbbbb")
+        let baseline = doctorSnapshot(
+            installedVersion: "1.1.0",
+            installed: "bbbbbbb",
+            sourceVersion: "1.1.0",
+            source: "bbbbbbbbbbbb"
+        )
         let dirty = doctorSnapshot(
+            installedVersion: "1.0.0",
             installed: "aaaaaaa",
+            sourceVersion: "1.1.0",
             source: "bbbbbbbbbbbb",
             dirty: true
         )
@@ -448,8 +535,18 @@ struct DoctorOrchestrationTests {
     @Test
     @MainActor
     func successfulRepairRequiresPostflightAlignment() async throws {
-        let baseline = doctorSnapshot(installed: "bbbbbbb", source: "bbbbbbbbbbbb")
-        let before = doctorSnapshot(installed: "aaaaaaa", source: "bbbbbbbbbbbb")
+        let baseline = doctorSnapshot(
+            installedVersion: "1.1.0",
+            installed: "bbbbbbb",
+            sourceVersion: "1.1.0",
+            source: "bbbbbbbbbbbb"
+        )
+        let before = doctorSnapshot(
+            installedVersion: "1.0.0",
+            installed: "aaaaaaa",
+            sourceVersion: "1.1.0",
+            source: "bbbbbbbbbbbb"
+        )
         let fixture = try DoctorFixture(snapshots: [baseline, before, before, baseline])
         defer { fixture.remove() }
         await fixture.store.start()
@@ -470,8 +567,18 @@ struct DoctorOrchestrationTests {
     @Test
     @MainActor
     func successfulCommandWithoutPostflightProofStaysAttention() async throws {
-        let baseline = doctorSnapshot(installed: "bbbbbbb", source: "bbbbbbbbbbbb")
-        let before = doctorSnapshot(installed: "aaaaaaa", source: "bbbbbbbbbbbb")
+        let baseline = doctorSnapshot(
+            installedVersion: "1.1.0",
+            installed: "bbbbbbb",
+            sourceVersion: "1.1.0",
+            source: "bbbbbbbbbbbb"
+        )
+        let before = doctorSnapshot(
+            installedVersion: "1.0.0",
+            installed: "aaaaaaa",
+            sourceVersion: "1.1.0",
+            source: "bbbbbbbbbbbb"
+        )
         let fixture = try DoctorFixture(snapshots: [baseline, before, before, before])
         defer { fixture.remove() }
         await fixture.store.start()
@@ -489,9 +596,24 @@ struct DoctorOrchestrationTests {
     @Test
     @MainActor
     func sourceChangeBetweenPreflightAndExecutionStopsSafely() async throws {
-        let baseline = doctorSnapshot(installed: "bbbbbbb", source: "bbbbbbbbbbbb")
-        let before = doctorSnapshot(installed: "aaaaaaa", source: "bbbbbbbbbbbb")
-        let changed = doctorSnapshot(installed: "aaaaaaa", source: "cccccccccccc")
+        let baseline = doctorSnapshot(
+            installedVersion: "1.1.0",
+            installed: "bbbbbbb",
+            sourceVersion: "1.1.0",
+            source: "bbbbbbbbbbbb"
+        )
+        let before = doctorSnapshot(
+            installedVersion: "1.0.0",
+            installed: "aaaaaaa",
+            sourceVersion: "1.1.0",
+            source: "bbbbbbbbbbbb"
+        )
+        let changed = doctorSnapshot(
+            installedVersion: "1.0.0",
+            installed: "aaaaaaa",
+            sourceVersion: "1.1.0",
+            source: "cccccccccccc"
+        )
         let fixture = try DoctorFixture(snapshots: [baseline, before, changed])
         defer { fixture.remove() }
         await fixture.store.start()
@@ -516,6 +638,16 @@ private actor SequencedInventory: InventoryCapturing {
     }
 
     func capture(machineID: String, displayName: String?) async -> MachineSnapshot {
+        let index = min(calls, snapshots.count - 1)
+        calls += 1
+        return snapshots[index]
+    }
+
+    func captureForDoctor(
+        machineID: String,
+        displayName: String?,
+        componentID: String
+    ) async -> MachineSnapshot {
         let index = min(calls, snapshots.count - 1)
         calls += 1
         return snapshots[index]
@@ -598,7 +730,9 @@ private final class DoctorFixture {
 }
 
 private func doctorSnapshot(
+    installedVersion: String,
     installed: String,
+    sourceVersion: String,
     source: String,
     dirty: Bool = false
 ) -> MachineSnapshot {
@@ -611,7 +745,9 @@ private func doctorSnapshot(
         osVersion: "26.6",
         osBuild: "25G83",
         components: [authBarObservation(
+            installedVersion: installedVersion,
             installedRevision: installed,
+            sourceVersion: sourceVersion,
             sourceRevision: source,
             dirty: dirty
         )]
@@ -619,7 +755,9 @@ private func doctorSnapshot(
 }
 
 private func authBarObservation(
+    installedVersion: String = "1.0.0",
     installedRevision: String,
+    sourceVersion: String? = nil,
     sourceRevision: String,
     dirty: Bool
 ) -> ComponentObservation {
@@ -628,8 +766,9 @@ private func authBarObservation(
         name: "AuthBar",
         kind: .application,
         status: .installed,
-        installedVersion: "1.0.0",
+        installedVersion: installedVersion,
         installedRevision: installedRevision,
+        sourceVersion: sourceVersion,
         sourceRevision: sourceRevision,
         sourceBranch: "main",
         sourceDirty: dirty,

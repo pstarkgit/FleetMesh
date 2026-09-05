@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.10 — 2026-09-05
+
+- Made fleet software posture version-first. Installed version, product-owned
+  latest-version evidence, and runtime state determine health; developer branch,
+  dirtiness, source revision, and installed/source commit equality do not.
+- Added Murmr Voice's signed Sparkle appcast as its authoritative latest-stable
+  check. Installed `0.2.36` is aligned when the feed reports `0.2.36`, regardless
+  of an unrelated older local checkout.
+- Moved software-checkout inspection behind explicit Doctor repair preflight.
+  Dirty, changed, or older source still blocks a requested source installer, but
+  it no longer creates fleet drift or attention on its own.
+- Stopped routine local and Linux software inventory from reading Git checkouts,
+  and stripped Doctor-only software checkout fields from shared machine JSON.
+- Kept exact configuration and theme fingerprints as explicit baseline state.
+  Failed product update checks remain Unknown rather than being reported healthy.
+
 ## 0.1.9 — 2026-09-05
 
 - Made managed-software cards clickable. Each card expands in place with its

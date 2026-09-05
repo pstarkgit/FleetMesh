@@ -39,7 +39,7 @@ struct DriftEngineTests {
     }
 
     @Test
-    func dirtyCheckoutBlocksConvergenceEvenWhenVersionMatches() {
+    func softwareCheckoutDirtinessDoesNotAffectFleetPosture() {
         let reference = fixtureSnapshot(components: [fixtureComponent(version: "1.2.3")])
         let dirty = ComponentObservation(
             id: "authbar",
@@ -57,12 +57,12 @@ struct DriftEngineTests {
             manifest: FleetManifest(snapshot: reference)
         )
 
-        #expect(assessment.drifts.first?.state == .localChanges)
-        #expect(assessment.drifts.first?.severity == .attention)
+        #expect(assessment.drifts.first?.state == .aligned)
+        #expect(assessment.attentionCount == 0)
     }
 
     @Test
-    func installedAndSourceRevisionDivergenceIsVisible() {
+    func softwareCheckoutRevisionDoesNotAffectFleetPosture() {
         let observation = ComponentObservation(
             id: "authbar",
             name: "AuthBar",
@@ -81,8 +81,85 @@ struct DriftEngineTests {
             manifest: FleetManifest(snapshot: snapshot)
         )
 
-        #expect(assessment.drifts.first?.state == .different)
-        #expect(assessment.drifts.first?.summary.contains("deployment state") == true)
+        #expect(assessment.drifts.first?.state == .aligned)
+        #expect(assessment.attentionCount == 0)
+    }
+
+    @Test
+    func murmrUsesProductFeedAndIgnoresOlderCheckout() {
+        let baseline = ComponentObservation(
+            id: "murmr-voice",
+            name: "Murmr Voice",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.2.36",
+            evidence: "Recorded minimum"
+        )
+        let observed = ComponentObservation(
+            id: "murmr-voice",
+            name: "Murmr Voice",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.2.36",
+            installedRevision: "639cc57a08dfa0c3d2e1b45fc93c37cbfc6e3795",
+            productVersionCheck: .verified(
+                version: "0.2.36",
+                authority: .sparkleAppcast
+            ),
+            sourceVersion: "0.2.35",
+            sourceRevision: "cd3bc2607960",
+            sourceDirty: false,
+            isRunning: true,
+            evidence: "Installed app and product feed"
+        )
+        let reference = fixtureSnapshot(components: [baseline])
+        let current = fixtureSnapshot(components: [observed])
+        let manifest = FleetManifest(snapshot: reference)
+        let targets = ProductVersionTargetResolver().resolve(
+            manifest: manifest,
+            localSnapshot: current
+        )
+
+        let assessment = DriftEngine().assess(
+            snapshot: current,
+            manifest: manifest,
+            productVersionTargets: targets
+        )
+        let drift = assessment.drifts.first
+
+        #expect(drift?.state == .aligned)
+        #expect(drift?.targetLabel == "Latest available")
+        #expect(drift?.summary.contains("product update feed") == true)
+        #expect(assessment.attentionCount == 0)
+    }
+
+    @Test
+    func failedProductVersionCheckIsUnknownNotHealthy() {
+        let baseline = fixtureSnapshot(components: [fixtureComponent(version: "1.2.3")])
+        let observed = ComponentObservation(
+            id: "authbar",
+            name: "AuthBar",
+            kind: .application,
+            status: .installed,
+            installedVersion: "1.2.3",
+            productVersionCheck: .unavailable(authority: .sparkleAppcast),
+            evidence: "Installed app; update feed unavailable"
+        )
+        let current = fixtureSnapshot(components: [observed])
+        let manifest = FleetManifest(snapshot: baseline)
+        let targets = ProductVersionTargetResolver().resolve(
+            manifest: manifest,
+            localSnapshot: current
+        )
+        let assessment = DriftEngine().assess(
+            snapshot: current,
+            manifest: manifest,
+            productVersionTargets: targets
+        )
+
+        #expect(assessment.drifts.first?.state == .unknown)
+        #expect(assessment.attentionCount == 1)
+        #expect(assessment.drifts.first?.summary.contains("could not be verified") == true)
     }
 
     @Test
@@ -302,8 +379,6 @@ private func fixtureComponent(
         status: .installed,
         installedVersion: version,
         installedRevision: revision,
-        sourceRevision: revision,
-        sourceDirty: false,
         evidence: "Test evidence"
     )
 }

@@ -1438,14 +1438,6 @@ private struct InlineRemediationPanel: View {
                     .disabled(!isLocalMachine)
                     .accessibilityIdentifier("fleetmesh.reviewCheckout.\(drift.componentID)")
             }
-        case .updateCheckout:
-            if let observation {
-                Button("Review/update local checkout") { onReviewCheckout(observation) }
-                    .buttonStyle(.borderedProminent)
-                    .tint(DSTheme.purple)
-                    .disabled(!isLocalMachine)
-                    .accessibilityIdentifier("fleetmesh.updateCheckout.\(drift.componentID)")
-            }
         case .useObservedBaseline:
             if let observation {
                 Button("Use observed as baseline…") {
@@ -1484,7 +1476,6 @@ private struct InlineRemediationPanel: View {
     private var actionSymbol: String {
         if finding?.canRepair == true { return "wrench.and.screwdriver.fill" }
         if drift.state == .localChanges { return "hand.raised.fill" }
-        if action == .updateCheckout { return "arrow.triangle.2.circlepath" }
         if action == .useObservedBaseline { return "scope" }
         return "info.circle.fill"
     }
@@ -1492,7 +1483,6 @@ private struct InlineRemediationPanel: View {
     private var actionColor: Color {
         if finding?.canRepair == true { return DSTheme.orange }
         if drift.state == .localChanges { return DSTheme.purple }
-        if action == .updateCheckout { return DSTheme.purple }
         if action == .useObservedBaseline { return DSTheme.blue }
         return DSTheme.green
     }

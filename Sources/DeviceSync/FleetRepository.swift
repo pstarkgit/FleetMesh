@@ -61,7 +61,10 @@ struct FleetRepository: Sendable {
         let destination = machinesURL
             .appendingPathComponent(snapshot.machineID.lowercased())
             .appendingPathExtension("json")
-        try write(snapshot, to: destination)
+        // Software checkout details are Doctor-local preflight evidence. The
+        // shared fleet protocol contains installed/product-version evidence,
+        // never developer branch, dirtiness, source revision, or Git trees.
+        try write(snapshot.removingSoftwareCheckoutEvidence(), to: destination)
         return destination
     }
 

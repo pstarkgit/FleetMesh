@@ -155,6 +155,7 @@ struct AppProbeDefinition: Sendable {
     let processNames: [String]
     let managedVersionProbe: ManagedVersionProbeDefinition?
     let sourceVersionProbe: SourceVersionProbeDefinition?
+    let productVersionProbe: ProductVersionProbeDefinition?
 
     init(
         id: String,
@@ -165,7 +166,8 @@ struct AppProbeDefinition: Sendable {
         commitKeys: [String],
         processNames: [String],
         managedVersionProbe: ManagedVersionProbeDefinition? = nil,
-        sourceVersionProbe: SourceVersionProbeDefinition? = nil
+        sourceVersionProbe: SourceVersionProbeDefinition? = nil,
+        productVersionProbe: ProductVersionProbeDefinition? = nil
     ) {
         self.id = id
         self.name = name
@@ -176,6 +178,7 @@ struct AppProbeDefinition: Sendable {
         self.processNames = processNames
         self.managedVersionProbe = managedVersionProbe
         self.sourceVersionProbe = sourceVersionProbe
+        self.productVersionProbe = productVersionProbe
     }
 }
 
@@ -204,6 +207,10 @@ struct SourceVersionProbeDefinition: Sendable {
     let format: SourceVersionFormat
 }
 
+enum ProductVersionProbeDefinition: Sendable {
+    case sparkleAppcast(URL)
+}
+
 struct ThemeProbeDefinition: Sendable {
     let id: String
     let name: String
@@ -228,6 +235,21 @@ struct ThemeProbeDefinition: Sendable {
 
 protocol InventoryCapturing: Sendable {
     func capture(machineID: String, displayName: String?) async -> MachineSnapshot
+    func captureForDoctor(
+        machineID: String,
+        displayName: String?,
+        componentID: String
+    ) async -> MachineSnapshot
+}
+
+extension InventoryCapturing {
+    func captureForDoctor(
+        machineID: String,
+        displayName: String?,
+        componentID: String
+    ) async -> MachineSnapshot {
+        await capture(machineID: machineID, displayName: displayName)
+    }
 }
 
 struct InventoryService: Sendable {
@@ -419,6 +441,9 @@ struct InventoryService: Sendable {
                 sourceVersionProbe: SourceVersionProbeDefinition(
                     relativePath: "Sources/Murmur/MurmurVersion.swift",
                     format: .swiftStaticCurrent
+                ),
+                productVersionProbe: .sparkleAppcast(
+                    URL(string: "https://murmr-ai.com/updates/macos/stable/appcast.xml")!
                 )
             ),
             AppProbeDefinition(
@@ -481,10 +506,7 @@ struct InventoryService: Sendable {
             definition,
             applicationsByBundleID: context.applicationDiscovery.applicationsByBundleID
         )
-        let source = await sourceState(
-            relativePath: definition.sourceRelativePath,
-            versionProbe: definition.sourceVersionProbe
-        )
+        async let productVersionCheck = probeProductVersion(definition.productVersionProbe)
         let isRunning = context.runningProcessNames.map { runningNames in
             definition.processNames.contains { runningNames.contains($0) }
         }
@@ -495,10 +517,7 @@ struct InventoryService: Sendable {
                 name: definition.name,
                 kind: .application,
                 status: .unknown,
-                sourceVersion: source?.version,
-                sourceRevision: source?.revision,
-                sourceBranch: source?.branch,
-                sourceDirty: source?.dirty,
+                productVersionCheck: await productVersionCheck,
                 isRunning: isRunning,
                 evidence: "Application discovery could not be completed."
             )
@@ -510,10 +529,7 @@ struct InventoryService: Sendable {
                 name: definition.name,
                 kind: .application,
                 status: .missing,
-                sourceVersion: source?.version,
-                sourceRevision: source?.revision,
-                sourceBranch: source?.branch,
-                sourceDirty: source?.dirty,
+                productVersionCheck: await productVersionCheck,
                 isRunning: isRunning,
                 evidence: "No matching application bundle was found."
             )
@@ -526,10 +542,7 @@ struct InventoryService: Sendable {
                 name: definition.name,
                 kind: .application,
                 status: .unknown,
-                sourceVersion: source?.version,
-                sourceRevision: source?.revision,
-                sourceBranch: source?.branch,
-                sourceDirty: source?.dirty,
+                productVersionCheck: await productVersionCheck,
                 isRunning: isRunning,
                 evidence: "A matching application exists, but its bundle metadata could not be read."
             )
@@ -538,10 +551,6 @@ struct InventoryService: Sendable {
         let installedCommit = definition.commitKeys.compactMap {
             info[$0] as? String
         }.first { !$0.isEmpty }
-        let installedTree = await sourceTree(
-            revision: installedCommit,
-            relativePath: definition.sourceRelativePath
-        )
         let managedVersion = await probeManagedVersion(definition.managedVersionProbe)
 
         return ComponentObservation(
@@ -553,12 +562,7 @@ struct InventoryService: Sendable {
                 ?? info["CFBundleShortVersionString"] as? String,
             build: info["CFBundleVersion"] as? String,
             installedRevision: installedCommit,
-            sourceVersion: source?.version,
-            sourceRevision: source?.revision,
-            sourceBranch: source?.branch,
-            sourceDirty: source?.dirty,
-            sourceTree: source?.tree,
-            installedTree: installedTree,
+            productVersionCheck: await productVersionCheck,
             isRunning: isRunning,
             evidence: Self.applicationEvidence(managedVersion: managedVersion)
         )
@@ -595,8 +599,33 @@ struct InventoryService: Sendable {
         )
     }
 
-    private func probeCLIs(context: CaptureContext) async -> [ComponentObservation] {
-        let definitions = [
+    private func probeProductVersion(
+        _ definition: ProductVersionProbeDefinition?
+    ) async -> ProductVersionCheck? {
+        guard let definition else { return nil }
+        switch definition {
+        case .sparkleAppcast(let url):
+            let result = await commandRunner.run(
+                executable: URL(fileURLWithPath: "/usr/bin/curl"),
+                arguments: [
+                    "--fail", "--silent", "--show-error", "--location",
+                    "--proto", "=https", "--tlsv1.2",
+                    "--max-time", "5", "--max-filesize", "262144",
+                    url.absoluteString,
+                ],
+                environment: nil,
+                timeout: 7
+            )
+            guard result.exitCode == 0,
+                  !result.timedOut,
+                  let version = Self.parseSparkleAppcast(Data(result.standardOutput.utf8)) else {
+                return .unavailable(authority: .sparkleAppcast)
+            }
+            return .verified(version: version, authority: .sparkleAppcast)
+        }
+    }
+
+    static let cliDefinitions = [
             CLIProbeDefinition(
                 id: "ai-continuum",
                 name: "ai-continuum",
@@ -627,6 +656,9 @@ struct InventoryService: Sendable {
             ),
         ]
 
+    private func probeCLIs(context: CaptureContext) async -> [ComponentObservation] {
+        let definitions = Self.cliDefinitions
+
         return await withTaskGroup(of: ComponentObservation.self) { group in
             for definition in definitions {
                 group.addTask { await probeCLI(definition, context: context) }
@@ -641,10 +673,6 @@ struct InventoryService: Sendable {
         _ definition: CLIProbeDefinition,
         context: CaptureContext
     ) async -> ComponentObservation {
-        let source = await sourceState(
-            relativePath: definition.sourceRelativePath,
-            versionProbe: definition.sourceVersionProbe
-        )
         guard let executable = definition.executableCandidates
             .map(expandedURL)
             .first(where: { fileManager.isExecutableFile(atPath: $0.path) }) else {
@@ -653,10 +681,6 @@ struct InventoryService: Sendable {
                 name: definition.name,
                 kind: definition.id == "ai-continuum" ? .service : .commandLineTool,
                 status: .missing,
-                sourceVersion: source?.version,
-                sourceRevision: source?.revision,
-                sourceBranch: source?.branch,
-                sourceDirty: source?.dirty,
                 evidence: "No executable was found in the managed candidate locations."
             )
         }
@@ -677,10 +701,6 @@ struct InventoryService: Sendable {
             kind: definition.id == "ai-continuum" ? .service : .commandLineTool,
             status: result.exitCode == 0 ? .installed : .unknown,
             installedVersion: version,
-            sourceVersion: source?.version,
-            sourceRevision: source?.revision,
-            sourceBranch: source?.branch,
-            sourceDirty: source?.dirty,
             isRunning: definition.id == "ai-continuum"
                 ? context.runningProcessNames.map { $0.contains("ai-continuum-daemon") }
                 : nil,
@@ -865,15 +885,22 @@ struct InventoryService: Sendable {
             sourceVersion = nil
         }
         let finalRevisionResult = await gitCommand(["-C", url.path, "rev-parse", "HEAD"])
+        let finalStatusResult = await gitCommand(["-C", url.path, "status", "--porcelain"])
         let finalRevision = finalRevisionResult.standardOutput
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let initialStatus = statusResult.standardOutput
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalStatus = finalStatusResult.standardOutput
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard finalRevisionResult.exitCode == 0, !finalRevisionResult.timedOut,
-              finalRevision == revision else { return nil }
+              finalStatusResult.exitCode == 0, !finalStatusResult.timedOut,
+              finalRevision == revision,
+              finalStatus == initialStatus else { return nil }
         return SourceState(
             revision: String(revision.prefix(12)),
             tree: tree,
             branch: branchResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-            dirty: !statusResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            dirty: !finalStatus.isEmpty,
             version: sourceVersion
         )
     }
@@ -926,6 +953,77 @@ struct InventoryService: Sendable {
                 pattern: #"(?m)^\s*version\s*=\s*\"([^\"]+)\""#
             )
         }
+    }
+
+    static func parseSparkleAppcast(_ data: Data) -> String? {
+        guard data.count <= 262_144,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        let patterns = [
+            #"<sparkle:shortVersionString>\s*([^<\s]+)\s*</sparkle:shortVersionString>"#,
+            #"sparkle:shortVersionString\s*=\s*\"([^\"]+)\""#,
+        ]
+        var versions: [String] = []
+        for pattern in patterns {
+            guard let expression = try? NSRegularExpression(
+                pattern: pattern,
+                options: [.caseInsensitive]
+            ) else { continue }
+            let range = NSRange(text.startIndex..., in: text)
+            for match in expression.matches(in: text, range: range) {
+                guard match.numberOfRanges > 1,
+                      let valueRange = Range(match.range(at: 1), in: text),
+                      let version = VersionIdentity.normalizedDeclaration(String(text[valueRange])) else {
+                    continue
+                }
+                versions.append(version)
+            }
+        }
+        return versions.max { lhs, rhs in
+            VersionIdentity.compare(lhs, rhs) == .orderedAscending
+        }
+    }
+
+    func captureForDoctor(
+        machineID: String,
+        displayName: String?,
+        componentID: String
+    ) async -> MachineSnapshot {
+        let snapshot = await capture(machineID: machineID, displayName: displayName)
+        guard let observation = snapshot.component(componentID),
+              observation.kind != .configuration,
+              observation.kind != .theme,
+              let definition = sourceDefinition(componentID: componentID),
+              let source = await sourceState(
+                relativePath: definition.relativePath,
+                versionProbe: definition.versionProbe
+              ) else { return snapshot }
+        let installedTree = await sourceTree(
+            revision: observation.installedRevision,
+            relativePath: definition.relativePath
+        )
+        return snapshot.replacingComponent(observation.addingSoftwareCheckoutEvidence(
+            version: source.version,
+            revision: source.revision,
+            branch: source.branch,
+            dirty: source.dirty,
+            sourceTree: source.tree,
+            installedTree: installedTree
+        ))
+    }
+
+    private func sourceDefinition(
+        componentID: String
+    ) -> (relativePath: String, versionProbe: SourceVersionProbeDefinition?)? {
+        if let app = Self.applicationDefinitions.first(where: { $0.id == componentID }),
+           let path = app.sourceRelativePath {
+            return (path, app.sourceVersionProbe)
+        }
+        let cliDefinitions = Self.cliDefinitions
+        if let cli = cliDefinitions.first(where: { $0.id == componentID }),
+           let path = cli.sourceRelativePath {
+            return (path, cli.sourceVersionProbe)
+        }
+        return nil
     }
 
     private static func captureVersion(in text: String, pattern: String) -> String? {
