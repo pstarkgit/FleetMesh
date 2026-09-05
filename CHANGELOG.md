@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.9 — 2026-09-05
+
+- Made managed-software cards clickable. Each card expands in place with its
+  one safe next action: guarded Doctor repair or local-checkout review. Healthy
+  software has no mutation action.
+- Removed manual software promotion. FleetMesh now accepts software newer than
+  an older recorded minimum automatically and offers repair only when software
+  is behind a verified target or its deployment evidence is inconsistent.
+- Let clean product checkouts advertise a newer update target before that build
+  is installed, while preventing an older checkout from running an installer
+  that could downgrade a newer installed app.
+- Preserved dirty checkouts with review-only navigation; FleetMesh does not
+  pull, reset, overwrite, or convert local work into desired state.
+- Promoted product-installer failure output into the inline result and expanded
+  it automatically on failure. Administrator language appears only when the
+  captured output proves a permission or authorization failure; FleetMesh does
+  not rerun an installer as root when that product forbids it.
+- Fixed repository targeting across GitHub merge commits by proving installed
+  and source revisions resolve to the same immutable Git tree. Equal versions
+  with different trees remain drift.
+- Added a persistent `FleetMesh 0.1.9` build identity at the bottom of the
+  sidebar, with exact installed commit metadata available through Help and
+  accessibility.
+
 ## 0.1.8 — 2026-09-05
 
 - Added a first-class new-Mac join journey: FleetMesh validates an existing

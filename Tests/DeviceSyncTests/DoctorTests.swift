@@ -6,6 +6,169 @@ private let doctorFixtureMachineID = "11111111-1111-4111-8111-111111111111"
 
 struct DoctorPlannerTests {
     @Test
+    func inlinePolicyRoutesEachFindingToOnlyItsSafeAction() {
+        let repairObservation = ComponentObservation(
+            id: "murmr-voice",
+            name: "Murmr Voice",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.2.36",
+            installedRevision: "aaaaaaaaaaaa",
+            sourceVersion: "0.2.36",
+            sourceRevision: "bbbbbbbbbbbb",
+            sourceDirty: false,
+            evidence: "Installed/source divergence"
+        )
+        let repairDrift = ComponentDrift(
+            componentID: "murmr-voice",
+            name: "Murmr Voice",
+            kind: .application,
+            state: .different,
+            severity: .attention,
+            summary: "Installed/source divergence",
+            expected: "0.2.36",
+            observed: "0.2.36"
+        )
+        let repairFinding = DoctorPlanner().finding(
+            for: repairDrift,
+            observation: repairObservation,
+            target: ManifestTarget(observation: ComponentObservation(
+                id: "murmr-voice",
+                name: "Murmr Voice",
+                kind: .application,
+                status: .installed,
+                installedVersion: "0.2.36",
+                installedRevision: "bbbbbbbbbbbb",
+                sourceVersion: "0.2.36",
+                sourceRevision: "bbbbbbbbbbbb",
+                sourceDirty: false,
+                evidence: "Target"
+            ))
+        )
+        #expect(InlineRemediationPolicy.action(
+            drift: repairDrift,
+            observation: repairObservation,
+            finding: repairFinding
+        ) == .repair)
+
+        let dirty = ComponentObservation(
+            id: "harness-sync",
+            name: "Harness Sync",
+            kind: .configuration,
+            status: .installed,
+            sourceRevision: "bbbbbbbbbbbb",
+            sourceDirty: true,
+            configurationFingerprint: "bbbbbbbbbbbb",
+            evidence: "Dirty checkout"
+        )
+        let localChanges = ComponentDrift(
+            componentID: "harness-sync",
+            name: "Harness Sync",
+            kind: .configuration,
+            state: .localChanges,
+            severity: .attention,
+            summary: "Local work",
+            expected: "aaaaaaaaaaaa",
+            observed: "bbbbbbbbbbbb"
+        )
+        #expect(InlineRemediationPolicy.action(
+            drift: localChanges,
+            observation: dirty,
+            finding: nil
+        ) == .reviewCheckout)
+
+        let clean = ComponentObservation(
+            id: "codex-cli",
+            name: "Codex CLI",
+            kind: .commandLineTool,
+            status: .installed,
+            installedVersion: "0.2.0",
+            sourceDirty: false,
+            evidence: "Installed"
+        )
+        let baselineDrift = ComponentDrift(
+            componentID: "codex-cli",
+            name: "Codex CLI",
+            kind: .commandLineTool,
+            state: .different,
+            severity: .attention,
+            summary: "Version differs",
+            expected: "0.1.0",
+            observed: "0.2.0",
+            targetBasis: .savedBaseline
+        )
+        #expect(InlineRemediationPolicy.action(
+            drift: baselineDrift,
+            observation: clean,
+            finding: nil
+        ) == .none)
+
+        let repositoryDrift = ComponentDrift(
+            componentID: "codex-cli",
+            name: "Codex CLI",
+            kind: .commandLineTool,
+            state: .different,
+            severity: .attention,
+            summary: "Repository differs",
+            expected: "0.3.0",
+            observed: "0.2.0",
+            targetBasis: .latestRepository
+        )
+        #expect(InlineRemediationPolicy.action(
+            drift: repositoryDrift,
+            observation: clean,
+            finding: nil
+        ) == .none)
+
+        let theme = ComponentObservation(
+            id: "codex-themes",
+            name: "Codex themes",
+            kind: .theme,
+            status: .installed,
+            configurationFingerprint: "bbbbbbbbbbbb",
+            items: ["theme.json"],
+            evidence: "Theme fingerprint"
+        )
+        let themeDrift = ComponentDrift(
+            componentID: "codex-themes",
+            name: "Codex themes",
+            kind: .theme,
+            state: .different,
+            severity: .attention,
+            summary: "Theme differs",
+            expected: "aaaaaaaaaaaa",
+            observed: "bbbbbbbbbbbb"
+        )
+        #expect(InlineRemediationPolicy.action(
+            drift: themeDrift,
+            observation: theme,
+            finding: nil
+        ) == .useObservedBaseline)
+    }
+
+    @Test
+    func doctorFailureSummaryPromotesRealCauseAndDoesNotGuessAdmin() {
+        let ordinary = DoctorCommandResult(
+            exitCode: 1,
+            standardOutputTail: "building\n",
+            standardErrorTail: "FAILED: release project is not deterministic",
+            timedOut: false,
+            duration: 1
+        )
+        #expect(ordinary.failureSummary.contains("release project is not deterministic"))
+        #expect(!ordinary.failureSummary.localizedCaseInsensitiveContains("administrator"))
+
+        let permission = DoctorCommandResult(
+            exitCode: 1,
+            standardOutputTail: "",
+            standardErrorTail: "mv: /Applications/App: Permission denied",
+            timedOut: false,
+            duration: 1
+        )
+        #expect(permission.failureSummary.contains("Administrator approval is required"))
+        #expect(permission.failureSummary.contains("did not rerun the installer as root"))
+    }
+    @Test
     func pinnedDoctorApprovalRejectsChangedOrDirtySource() {
         let approved = authBarObservation(
             installedRevision: "bbbbbbb",
@@ -62,6 +225,48 @@ struct DoctorPlannerTests {
         #expect(finding.disposition == .repairable)
         #expect(finding.canRepair)
         #expect(finding.recipe?.displayCommand == "~/code/authbar/install.sh")
+    }
+
+    @Test
+    func olderCleanCheckoutCannotDowngradeNewerInstalledSoftware() {
+        let observation = ComponentObservation(
+            id: "murmr-voice",
+            name: "Murmr Voice",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.2.36",
+            installedRevision: "installed",
+            sourceVersion: "0.2.35",
+            sourceRevision: "source",
+            sourceDirty: false,
+            evidence: "Installed app newer than checkout"
+        )
+        let drift = ComponentDrift(
+            componentID: observation.id,
+            name: observation.name,
+            kind: observation.kind,
+            state: .different,
+            severity: .attention,
+            summary: "Deployment differs",
+            expected: "0.2.36",
+            observed: "0.2.36"
+        )
+
+        let finding = DoctorPlanner().finding(
+            for: drift,
+            observation: observation,
+            target: ManifestTarget(observation: observation)
+        )
+
+        #expect(finding.disposition == .protected)
+        #expect(!finding.canRepair)
+        #expect(finding.title.contains("Update"))
+        #expect(finding.detail.contains("will not run an installer that could downgrade"))
+        #expect(InlineRemediationPolicy.action(
+            drift: drift,
+            observation: observation,
+            finding: finding
+        ) == .updateCheckout)
     }
 
     @Test
@@ -169,6 +374,35 @@ struct DoctorPlannerTests {
 }
 
 struct DoctorOrchestrationTests {
+    @Test
+    func processDoctorRunnerCapturesLargeOutputWithoutDeadlock() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fleetmesh-doctor-runner-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let script = root.appendingPathComponent("repair.sh")
+        try Data("#!/bin/sh\ni=0\nwhile [ $i -lt 5000 ]; do echo repair-output-$i; i=$((i+1)); done\nexit 1\n".utf8)
+            .write(to: script)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: script.path
+        )
+        let command = DoctorResolvedCommand(
+            componentID: "test",
+            executableURL: script,
+            arguments: [],
+            workingDirectoryURL: root,
+            timeout: 5
+        )
+
+        let result = await ProcessDoctorCommandRunner().run(command)
+
+        #expect(result.exitCode == 1)
+        #expect(!result.timedOut)
+        #expect(result.combinedOutput?.contains("repair-output-4999") == true)
+        #expect(result.failureSummary.contains("repair-output-4999"))
+    }
+
     @Test
     @MainActor
     func remoteMachineCannotRunALocalRepair() async throws {

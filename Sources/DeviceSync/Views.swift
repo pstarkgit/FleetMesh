@@ -70,6 +70,7 @@ struct RootView: View {
             .searchable(text: $store.searchText, prompt: "Devices, roles, or apps")
 
             fleetFooter
+            buildFooter
         }
         .background(.ultraThinMaterial)
         .frame(minWidth: 250)
@@ -113,6 +114,20 @@ struct RootView: View {
         }
         .padding(14)
         .overlay(alignment: .top) { Divider() }
+    }
+
+    private var buildFooter: some View {
+        HStack {
+            Text(FleetMeshBuildIdentity.footerLabel)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(DSTheme.inkMuted)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 10)
+        .help(FleetMeshBuildIdentity.detail)
+        .accessibilityLabel(FleetMeshBuildIdentity.detail)
+        .accessibilityIdentifier("fleetmesh.buildIdentity")
     }
 }
 
@@ -806,6 +821,9 @@ struct FleetView: View {
     let onOpenSettings: () -> Void
     @State private var joinRole: DeviceRole = .workstation
     @State private var confirmJoin = false
+    @State private var expandedComponentID: String?
+    @State private var pendingInlineRepair: DoctorFinding?
+    @State private var pendingConfigurationBaseline: ComponentObservation?
 
     var body: some View {
         ScrollView {
@@ -846,6 +864,50 @@ struct FleetView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("FleetMesh will enroll this Mac as a \(joinRole.label.lowercased()) and apply only compatible fleet defaults. No app will be installed or repaired by joining.")
+        }
+        .confirmationDialog(
+            pendingInlineRepair.map { "Run \($0.title)?" } ?? "Run product repair?",
+            isPresented: Binding(
+                get: { pendingInlineRepair != nil },
+                set: { if !$0 { pendingInlineRepair = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Run product-owned repair") {
+                guard let finding = pendingInlineRepair,
+                      let machineID = store.selectedAssessment?.snapshot.machineID else { return }
+                pendingInlineRepair = nil
+                Task {
+                    await store.repair(componentID: finding.id, targetMachineID: machineID)
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingInlineRepair = nil }
+        } message: {
+            if let finding = pendingInlineRepair, let recipe = finding.recipe {
+                Text("FleetMesh will run \(recipe.displayCommand) as you, then re-scan and publish proof. The fleet baseline will not change. If the product requires administrator approval, its supported installer must request it explicitly.")
+            }
+        }
+        .confirmationDialog(
+            pendingConfigurationBaseline.map { "Use observed \($0.name) configuration?" }
+                ?? "Change configuration baseline?",
+            isPresented: Binding(
+                get: { pendingConfigurationBaseline != nil },
+                set: { if !$0 { pendingConfigurationBaseline = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Use observed configuration as baseline") {
+                guard let observation = pendingConfigurationBaseline else { return }
+                pendingConfigurationBaseline = nil
+                Task {
+                    await store.useObservedConfigurationAsBaseline(componentID: observation.id)
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingConfigurationBaseline = nil }
+        } message: {
+            if let observation = pendingConfigurationBaseline {
+                Text("This changes the exact fleet-wide configuration or theme fingerprint for \(observation.name). FleetMesh will scan again first and will not install software.")
+            }
         }
     }
 
@@ -1041,7 +1103,29 @@ struct FleetView: View {
                         ForEach(assessment.managedDrifts) { drift in
                             DriftRow(
                                 drift: drift,
-                                observation: assessment.snapshot.component(drift.componentID)
+                                observation: assessment.snapshot.component(drift.componentID),
+                                finding: store.doctorFindings(for: assessment).first {
+                                    $0.id == drift.componentID
+                                },
+                                run: store.doctorRun(for: drift.componentID),
+                                expanded: expandedComponentID == drift.componentID,
+                                isLocalMachine: assessment.snapshot.machineID == store.localSnapshot?.machineID,
+                                isBusy: store.isBusy,
+                                onToggle: {
+                                    expandedComponentID = expandedComponentID == drift.componentID
+                                        ? nil : drift.componentID
+                                },
+                                onRepair: { finding in pendingInlineRepair = finding },
+                                onUseObservedBaseline: { observation in
+                                    pendingConfigurationBaseline = observation
+                                },
+                                onReviewCheckout: { observation in
+                                    guard let path = FleetComponentPaths.sourceCheckout(
+                                        componentID: observation.id,
+                                        homeURL: FileManager.default.homeDirectoryForCurrentUser
+                                    ) else { return }
+                                    NSWorkspace.shared.activateFileViewerSelecting([path])
+                                }
                             )
                         }
                     }
@@ -1178,8 +1262,45 @@ private struct VerdictPill: View {
 private struct DriftRow: View {
     let drift: ComponentDrift
     let observation: ComponentObservation?
+    let finding: DoctorFinding?
+    let run: DoctorRunRecord?
+    let expanded: Bool
+    let isLocalMachine: Bool
+    let isBusy: Bool
+    let onToggle: () -> Void
+    let onRepair: (DoctorFinding) -> Void
+    let onUseObservedBaseline: (ComponentObservation) -> Void
+    let onReviewCheckout: (ComponentObservation) -> Void
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: onToggle) {
+                rowContent
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("fleetmesh.managedItem.\(drift.componentID)")
+            .accessibilityHint(expanded ? "Collapse actions" : "Show actions and details")
+
+            if expanded {
+                Divider().padding(.vertical, 12)
+                InlineRemediationPanel(
+                    drift: drift,
+                    observation: observation,
+                    finding: finding,
+                    run: run,
+                    isLocalMachine: isLocalMachine,
+                    isBusy: isBusy,
+                    onRepair: onRepair,
+                    onUseObservedBaseline: onUseObservedBaseline,
+                    onReviewCheckout: onReviewCheckout
+                )
+            }
+        }
+        .deviceCard()
+    }
+
+    private var rowContent: some View {
         HStack(alignment: .top, spacing: 13) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1201,6 +1322,9 @@ private struct DriftRow: View {
                     Text(drift.state.label)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(DSTheme.color(for: drift.state))
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DSTheme.inkMuted)
                 }
                 Text(drift.summary)
                     .font(.caption)
@@ -1208,7 +1332,7 @@ private struct DriftRow: View {
 
                 HStack(spacing: 12) {
                     if let expected = drift.expected {
-                        Label("\(drift.targetBasis.label) \(expected)", systemImage: "scope")
+                        Label("\(drift.targetLabel) \(expected)", systemImage: "scope")
                     }
                     if let observed = drift.observed {
                         Label("Observed \(observed)", systemImage: "eye")
@@ -1222,7 +1346,6 @@ private struct DriftRow: View {
                 .foregroundStyle(DSTheme.inkMuted)
             }
         }
-        .deviceCard()
     }
 
     private var symbol: String {
@@ -1233,6 +1356,145 @@ private struct DriftRow: View {
         case .configuration: "slider.horizontal.3"
         case .theme: "paintpalette.fill"
         }
+    }
+}
+
+private struct InlineRemediationPanel: View {
+    let drift: ComponentDrift
+    let observation: ComponentObservation?
+    let finding: DoctorFinding?
+    let run: DoctorRunRecord?
+    let isLocalMachine: Bool
+    let isBusy: Bool
+    let onRepair: (DoctorFinding) -> Void
+    let onUseObservedBaseline: (ComponentObservation) -> Void
+    let onReviewCheckout: (ComponentObservation) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: actionSymbol)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(actionColor)
+                    .frame(width: 36, height: 36)
+                    .background(actionColor.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(actionTitle)
+                        .font(.subheadline.weight(.semibold))
+                    Text(actionDetail)
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                actionButton
+            }
+
+            if let run {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(run.outcome.label)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(run.outcome == .failed ? DSTheme.red : DSTheme.inkSoft)
+                    Text(run.summary)
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkSoft)
+                    if let output = run.output, !output.isEmpty {
+                        ScrollView(.horizontal) {
+                            Text(output)
+                                .font(.system(size: 10, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(9)
+                        .background(DSTheme.canvas)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .accessibilityIdentifier("fleetmesh.repairOutput.\(drift.componentID)")
+                    }
+                }
+                .padding(10)
+                .background((run.outcome == .failed ? DSTheme.red : DSTheme.blue).opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actionButton: some View {
+        switch action {
+        case .repair:
+            if let finding {
+            Button("Repair…") { onRepair(finding) }
+                .buttonStyle(.borderedProminent)
+                .tint(DSTheme.orange)
+                .disabled(isBusy || !isLocalMachine)
+                .accessibilityIdentifier("fleetmesh.inlineRepair.\(drift.componentID)")
+            }
+        case .reviewCheckout:
+            if let observation {
+                Button("Review local checkout") { onReviewCheckout(observation) }
+                    .buttonStyle(.bordered)
+                    .disabled(!isLocalMachine)
+                    .accessibilityIdentifier("fleetmesh.reviewCheckout.\(drift.componentID)")
+            }
+        case .updateCheckout:
+            if let observation {
+                Button("Review/update local checkout") { onReviewCheckout(observation) }
+                    .buttonStyle(.borderedProminent)
+                    .tint(DSTheme.purple)
+                    .disabled(!isLocalMachine)
+                    .accessibilityIdentifier("fleetmesh.updateCheckout.\(drift.componentID)")
+            }
+        case .useObservedBaseline:
+            if let observation {
+                Button("Use observed as baseline…") {
+                    onUseObservedBaseline(observation)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(DSTheme.blue)
+                .disabled(isBusy || !isLocalMachine)
+                .accessibilityIdentifier("fleetmesh.useObservedBaseline.\(drift.componentID)")
+            }
+        case .none:
+            EmptyView()
+        }
+    }
+
+    private var action: InlineRemediationAction {
+        InlineRemediationPolicy.action(
+            drift: drift,
+            observation: observation,
+            finding: finding
+        )
+    }
+
+    private var actionTitle: String {
+        if let finding { return finding.title }
+        if drift.state == .aligned { return "No action needed" }
+        return "Review observed state"
+    }
+
+    private var actionDetail: String {
+        if let finding { return finding.detail }
+        if drift.state == .aligned { return "Fresh evidence already matches the selected target." }
+        return "Choose whether this observation should become explicit fleet-wide desired state."
+    }
+
+    private var actionSymbol: String {
+        if finding?.canRepair == true { return "wrench.and.screwdriver.fill" }
+        if drift.state == .localChanges { return "hand.raised.fill" }
+        if action == .updateCheckout { return "arrow.triangle.2.circlepath" }
+        if action == .useObservedBaseline { return "scope" }
+        return "info.circle.fill"
+    }
+
+    private var actionColor: Color {
+        if finding?.canRepair == true { return DSTheme.orange }
+        if drift.state == .localChanges { return DSTheme.purple }
+        if action == .updateCheckout { return DSTheme.purple }
+        if action == .useObservedBaseline { return DSTheme.blue }
+        return DSTheme.green
     }
 }
 
@@ -1656,6 +1918,9 @@ private struct DoctorFindingRow: View {
             }
         }
         .deviceCard()
+        .onChange(of: run?.finishedAt) { _, _ in
+            if run?.outcome == .failed { showOutput = true }
+        }
     }
 
     private var dispositionColor: Color {

@@ -344,6 +344,48 @@ final class FleetStore {
         }
     }
 
+    func useObservedConfigurationAsBaseline(componentID: String) async {
+        guard !isBusy,
+              let displayedManifest = manifest,
+              let fleetRootURL else { return }
+        isUpdatingScope = true
+        lastError = nil
+        lastActionMessage = nil
+        defer { isUpdatingScope = false }
+
+        do {
+            let state = try localRepository.loadOrCreate()
+            let snapshot = await inventory.capture(
+                machineID: state.machineID,
+                displayName: state.displayName
+            )
+            guard let observation = snapshot.component(componentID),
+                  observation.sourceDirty != true else {
+                throw FleetStoreError.freshObservationUnavailable(componentID)
+            }
+            let updated = try displayedManifest.settingObservedConfigurationBaseline(
+                componentID: componentID,
+                observation: observation,
+                updatedByMachineID: state.machineID
+            )
+            let read = try await fleetAccess.publishAndSave(
+                snapshot,
+                manifest: updated,
+                replacingRevision: displayedManifest.revision,
+                rootURL: fleetRootURL
+            )
+            localSnapshot = snapshot
+            apply(read: read, currentSnapshot: snapshot)
+            lastRefreshAt = Date()
+            lastActionMessage = "\(observation.name) now uses the freshly observed configuration as its fleet baseline. No software was installed or repaired."
+        } catch {
+            lastError = error.localizedDescription
+            lastActionMessage = nil
+            await reloadFleet()
+        }
+    }
+
+
     func setComponentHidden(componentID: String, hidden: Bool) {
         guard !isBusy else { return }
         guard let item = catalogScopeItems.first(where: { $0.id == componentID }) else {
@@ -920,7 +962,7 @@ final class FleetStore {
                     componentID: componentID,
                     componentName: drift.name,
                     outcome: .failed,
-                    summary: "The product-owned repair exited with status \(commandResult.exitCode). Fresh evidence was published.",
+                    summary: "\(commandResult.failureSummary) Fresh evidence was published.",
                     output: commandResult.combinedOutput,
                     startedAt: startedAt
                 )
@@ -1174,6 +1216,7 @@ private enum FleetStoreError: LocalizedError {
     case unknownCatalogComponent(String)
     case fleetConnectionLost
     case localRoleRollbackFailed(change: String, rollback: String)
+    case freshObservationUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -1193,6 +1236,8 @@ private enum FleetStoreError: LocalizedError {
             "The fleet manifest changed or disappeared while connecting. FleetMesh restored the previous fleet folder; wait for sync to finish and try again."
         case .localRoleRollbackFailed(let change, let rollback):
             "The fleet policy change failed (\(change)), and FleetMesh could not restore the controller's previous device role (\(rollback)). Reopen FleetMesh and reconcile the role before checking in this device again."
+        case .freshObservationUnavailable(let componentID):
+            "A fresh clean observation for \(componentID) was unavailable, so FleetMesh did not change the baseline."
         }
     }
 }

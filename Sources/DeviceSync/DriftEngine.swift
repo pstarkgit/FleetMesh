@@ -163,13 +163,22 @@ struct DriftEngine: Sendable {
             guard let observed = observation.installedVersion else {
                 return unknownVersion(target: target, observation: observation)
             }
-            if !VersionIdentity.matches(expected, observed) {
+            let comparison = VersionIdentity.compare(observed, expected)
+            let observedIsAcceptable: Bool
+            if let comparison {
+                observedIsAcceptable = target.basis == .savedBaseline
+                    ? comparison != .orderedAscending
+                    : comparison == .orderedSame
+            } else {
+                observedIsAcceptable = false
+            }
+            if !observedIsAcceptable {
                 return mismatch(
                     target: target,
                     observation: observation,
                     summary: target.basis == .latestRepository
                         ? "Installed version differs from the latest verified repository build."
-                        : "Installed version differs from the saved fleet baseline.",
+                        : "Installed software is older than the recorded minimum.",
                     expected: expected,
                     observed: observed
                 )
@@ -178,7 +187,7 @@ struct DriftEngine: Sendable {
 
         if let installed = observation.installedRevision,
            let source = observation.sourceRevision,
-           !RevisionIdentity.matches(installed, source) {
+           !RevisionIdentity.provesSameBuild(observation) {
             return ComponentDrift(
                 componentID: target.id,
                 name: displayName,
@@ -192,7 +201,8 @@ struct DriftEngine: Sendable {
             )
         }
 
-        if let expected = target.expectedInstalledRevision {
+        if target.basis == .latestRepository,
+           let expected = target.expectedInstalledRevision {
             guard let observed = observation.installedRevision else {
                 return ComponentDrift(
                     componentID: target.id,
@@ -210,7 +220,7 @@ struct DriftEngine: Sendable {
                 return mismatch(
                     target: target,
                     observation: observation,
-                    summary: "Installed build revision differs from the fleet baseline.",
+                    summary: "Installed build differs from the latest verified repository build.",
                     expected: expected,
                     observed: observed
                 )
@@ -242,13 +252,14 @@ struct DriftEngine: Sendable {
             }
         }
 
-        if let expected = target.expectedSourceRevision,
+        if target.basis == .latestRepository,
+           let expected = target.expectedSourceRevision,
            let observed = observation.sourceRevision,
            !RevisionIdentity.matches(expected, observed) {
             return mismatch(
                 target: target,
                 observation: observation,
-                summary: "Source checkout differs from the fleet baseline; nothing was pulled or installed.",
+                summary: "Source checkout differs from the latest verified repository build; nothing was pulled or installed.",
                 expected: expected,
                 observed: observed
             )
@@ -262,7 +273,7 @@ struct DriftEngine: Sendable {
             severity: .information,
             summary: target.basis == .latestRepository
                 ? "Observed state matches the latest verified repository build."
-                : "Observed state matches the saved fleet baseline.",
+                : softwareSummary(target: target, observation: observation),
             expected: expectedSummary(target),
             observed: observedSummary(observation),
             targetBasis: target.basis
@@ -311,6 +322,22 @@ struct DriftEngine: Sendable {
             ?? target.expectedInstalledRevision
             ?? target.expectedSourceRevision
             ?? target.expectedConfigurationFingerprint.map(shortFingerprint)
+    }
+
+    private func softwareSummary(
+        target: ResolvedFleetTarget,
+        observation: ComponentObservation
+    ) -> String {
+        if target.kind != .configuration,
+           target.kind != .theme,
+           let expected = target.expectedVersion,
+           let observed = observation.installedVersion,
+           VersionIdentity.compare(observed, expected) == .orderedDescending {
+            return "Observed software is newer than the recorded minimum and is accepted automatically."
+        }
+        return target.kind == .configuration || target.kind == .theme
+            ? "Observed state matches the saved fleet baseline."
+            : "Observed software matches the recorded minimum."
     }
 
     private func observedSummary(_ observation: ComponentObservation) -> String? {

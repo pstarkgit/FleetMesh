@@ -24,6 +24,13 @@ FleetMesh has two native surfaces backed by one live store:
 - A singleton full app for device inventory, fleet defaults, per-device scope,
   bootstrap planning, and Doctor's guarded repair workflow.
 
+Managed software cards are themselves actionable. Selecting one expands an
+inline panel without leaving Fleet posture. Repairable drift uses Doctor's same
+fresh preflight, hard-coded product entrypoint, and postflight proof. Dirty
+checkouts offer review only. Software tracks the latest verified product or
+repository version automatically; an observed software version newer than an
+older recorded minimum is healthy and never requires manual promotion.
+
 ```mermaid
 flowchart LR
     Manifest[fleet-manifest.json\nmanifest schema v2] --> Engine[Policy + drift engine]
@@ -65,11 +72,15 @@ an item Required or Excluded are explicit desired-state actions.
 
 For managed software with a local product checkout, FleetMesh reads the version
 declared by this Mac's committed `HEAD` without fetching, pulling, or changing
-it. A fresh, clean checkout and installed build must prove the same version and
-revision before that local repository identity becomes the runtime target.
+it. A fresh, clean checkout may define a newer update target before installation.
+When its version is already installed, installed and source evidence must prove
+the same revision or byte-identical immutable Git trees. An older checkout never
+becomes authority for a newer installed app.
 Synced machine reports never redefine targets. The saved manifest remains the
 fallback and the authority for scope, device policy, and configuration/theme
-fingerprints. Cards label this provenance as **Latest repo** or **Saved baseline**.
+fingerprints. Software cards label version provenance as **Latest repo** or
+**Recorded minimum**; exact configuration and theme fingerprints remain explicit
+desired state.
 
 Codex Voice remains observable evidence, but it is outside the managed daily
 baseline. FleetMesh should not uninstall it or repair it as part of normal fleet

@@ -538,6 +538,10 @@ struct InventoryService: Sendable {
         let installedCommit = definition.commitKeys.compactMap {
             info[$0] as? String
         }.first { !$0.isEmpty }
+        let installedTree = await sourceTree(
+            revision: installedCommit,
+            relativePath: definition.sourceRelativePath
+        )
         let managedVersion = await probeManagedVersion(definition.managedVersionProbe)
 
         return ComponentObservation(
@@ -553,6 +557,8 @@ struct InventoryService: Sendable {
             sourceRevision: source?.revision,
             sourceBranch: source?.branch,
             sourceDirty: source?.dirty,
+            sourceTree: source?.tree,
+            installedTree: installedTree,
             isRunning: isRunning,
             evidence: Self.applicationEvidence(managedVersion: managedVersion)
         )
@@ -809,6 +815,7 @@ struct InventoryService: Sendable {
 
     private struct SourceState: Sendable {
         let revision: String
+        let tree: String
         let branch: String?
         let dirty: Bool
         let version: String?
@@ -838,8 +845,11 @@ struct InventoryService: Sendable {
               ) else { return nil }
         let branchResult = await gitCommand(["-C", url.path, "branch", "--show-current"])
         let statusResult = await gitCommand(["-C", url.path, "status", "--porcelain"])
+        let treeResult = await gitCommand(["-C", url.path, "rev-parse", "\(revision)^{tree}"])
         guard branchResult.exitCode == 0, !branchResult.timedOut,
-              statusResult.exitCode == 0, !statusResult.timedOut else { return nil }
+              statusResult.exitCode == 0, !statusResult.timedOut,
+              treeResult.exitCode == 0, !treeResult.timedOut else { return nil }
+        guard let tree = validFullObjectID(treeResult.standardOutput) else { return nil }
         let sourceVersion: String?
         if let versionProbe {
             let versionResult = await gitCommand([
@@ -861,10 +871,33 @@ struct InventoryService: Sendable {
               finalRevision == revision else { return nil }
         return SourceState(
             revision: String(revision.prefix(12)),
+            tree: tree,
             branch: branchResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
             dirty: !statusResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             version: sourceVersion
         )
+    }
+
+    private func sourceTree(revision: String?, relativePath: String?) async -> String? {
+        guard let revision, let relativePath else { return nil }
+        let url = relativePath.hasPrefix("../")
+            ? homeURL.appendingPathComponent(String(relativePath.dropFirst(3)))
+            : homeURL.appendingPathComponent(relativePath)
+        guard fileManager.fileExists(atPath: url.appendingPathComponent(".git").path) else {
+            return nil
+        }
+        let result = await gitCommand(["-C", url.path, "rev-parse", "\(revision)^{tree}"])
+        guard result.exitCode == 0, !result.timedOut else { return nil }
+        return validFullObjectID(result.standardOutput)
+    }
+
+    private func validFullObjectID(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count == 40,
+              trimmed.unicodeScalars.allSatisfy(
+                CharacterSet(charactersIn: "0123456789abcdefABCDEF").contains
+              ) else { return nil }
+        return trimmed.lowercased()
     }
 
     static func parseSourceVersion(

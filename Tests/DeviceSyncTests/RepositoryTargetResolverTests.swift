@@ -36,6 +36,163 @@ struct RepositoryTargetResolverTests {
     }
 
     @Test
+    func cleanNewerCheckoutBecomesUpdateTargetBeforeInstallation() {
+        let machineID = "b41f9f4f-0fce-4792-a3c6-c93a73fcb4cd"
+        let baseline = targetSnapshot(
+            machineID: machineID,
+            installedVersion: "1.0.0",
+            sourceVersion: "1.0.0",
+            revision: "aaaaaaaaaaaa"
+        )
+        let observation = ComponentObservation(
+            id: "authbar",
+            name: "AuthBar",
+            kind: .application,
+            status: .installed,
+            installedVersion: "1.0.0",
+            installedRevision: "aaaaaaaaaaaa",
+            sourceVersion: "1.1.0",
+            sourceRevision: "bbbbbbbbbbbb",
+            sourceDirty: false,
+            sourceTree: String(repeating: "b", count: 40),
+            evidence: "Clean newer checkout"
+        )
+        let current = targetSnapshot(
+            machineID: machineID,
+            installedVersion: "1.0.0",
+            sourceVersion: "1.0.0",
+            revision: "aaaaaaaaaaaa"
+        ).replacingComponents([observation])
+
+        let target = RepositoryTargetResolver().resolve(
+            manifest: FleetManifest(snapshot: baseline),
+            localSnapshot: current,
+            now: Date(timeIntervalSince1970: 1_010)
+        )["authbar"]
+
+        #expect(target?.version == "1.1.0")
+        #expect(target?.sourceRevision == "bbbbbbbbbbbb")
+        #expect(target?.installedRevision == nil)
+    }
+
+    @Test
+    func olderCheckoutCannotBecomeTargetForNewerInstalledSoftware() {
+        let machineID = "b41f9f4f-0fce-4792-a3c6-c93a73fcb4cd"
+        let baseline = targetSnapshot(
+            machineID: machineID,
+            installedVersion: "1.0.0",
+            sourceVersion: "1.0.0",
+            revision: "aaaaaaaaaaaa"
+        )
+        let observation = ComponentObservation(
+            id: "authbar",
+            name: "AuthBar",
+            kind: .application,
+            status: .installed,
+            installedVersion: "1.2.0",
+            installedRevision: "cccccccccccc",
+            sourceVersion: "1.1.0",
+            sourceRevision: "bbbbbbbbbbbb",
+            sourceDirty: false,
+            sourceTree: String(repeating: "b", count: 40),
+            evidence: "Older checkout"
+        )
+        let current = targetSnapshot(
+            machineID: machineID,
+            installedVersion: "1.2.0",
+            sourceVersion: "1.2.0",
+            revision: "cccccccccccc"
+        ).replacingComponents([observation])
+
+        #expect(RepositoryTargetResolver().resolve(
+            manifest: FleetManifest(snapshot: baseline),
+            localSnapshot: current,
+            now: Date(timeIntervalSince1970: 1_010)
+        ).isEmpty)
+    }
+
+    @Test
+    func mergeCommitWithIdenticalTreeRemainsLatestRepositoryTarget() {
+        let machineID = "b41f9f4f-0fce-4792-a3c6-c93a73fcb4cd"
+        let baseline = targetSnapshot(
+            machineID: machineID,
+            installedVersion: "0.1.1",
+            sourceVersion: "0.1.1",
+            revision: "aaaaaaaaaaaa"
+        )
+        let manifest = FleetManifest(snapshot: baseline)
+        let tree = "8908725ae4859bc6c4ec5c2d26835fe572b5a8fa"
+        let observation = ComponentObservation(
+            id: "authbar",
+            name: "FleetMesh",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.1.8",
+            installedRevision: "c1f8f22",
+            sourceVersion: "0.1.8",
+            sourceRevision: "1a6a930566ff",
+            sourceDirty: false,
+            sourceTree: tree,
+            installedTree: tree,
+            evidence: "Merge tree proof"
+        )
+        let current = targetSnapshot(
+            machineID: machineID,
+            installedVersion: "0.1.8",
+            sourceVersion: "0.1.8",
+            revision: "c1f8f22"
+        ).replacingComponents([observation])
+
+        let target = RepositoryTargetResolver().resolve(
+            manifest: manifest,
+            localSnapshot: current,
+            now: Date(timeIntervalSince1970: 1_010)
+        )
+
+        #expect(target["authbar"]?.version == "0.1.8")
+        #expect(target["authbar"]?.installedRevision == "c1f8f22")
+        #expect(target["authbar"]?.sourceRevision == "1a6a930566ff")
+    }
+
+    @Test
+    func sameVersionDifferentTreesCannotBecomeRepositoryTarget() {
+        let machineID = "b41f9f4f-0fce-4792-a3c6-c93a73fcb4cd"
+        let baseline = targetSnapshot(
+            machineID: machineID,
+            installedVersion: "0.1.1",
+            sourceVersion: "0.1.1",
+            revision: "aaaaaaaaaaaa"
+        )
+        let manifest = FleetManifest(snapshot: baseline)
+        let observation = ComponentObservation(
+            id: "authbar",
+            name: "FleetMesh",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.1.8",
+            installedRevision: "c1f8f22",
+            sourceVersion: "0.1.8",
+            sourceRevision: "1a6a930566ff",
+            sourceDirty: false,
+            sourceTree: String(repeating: "a", count: 40),
+            installedTree: String(repeating: "b", count: 40),
+            evidence: "Different trees"
+        )
+        let current = targetSnapshot(
+            machineID: machineID,
+            installedVersion: "0.1.8",
+            sourceVersion: "0.1.8",
+            revision: "c1f8f22"
+        ).replacingComponents([observation])
+
+        #expect(RepositoryTargetResolver().resolve(
+            manifest: manifest,
+            localSnapshot: current,
+            now: Date(timeIntervalSince1970: 1_010)
+        ).isEmpty)
+    }
+
+    @Test
     func pendingDirtyAndOlderLocalRepositoriesCannotAdvanceTarget() throws {
         let authority = targetSnapshot(
             machineID: "b41f9f4f-0fce-4792-a3c6-c93a73fcb4cd",
@@ -333,4 +490,23 @@ private func targetSnapshot(
             ),
         ]
     )
+}
+
+private extension MachineSnapshot {
+    func replacingComponents(_ components: [ComponentObservation]) -> MachineSnapshot {
+        MachineSnapshot(
+            machineID: machineID,
+            name: name,
+            hostName: hostName,
+            modelIdentifier: modelIdentifier,
+            architecture: architecture,
+            osVersion: osVersion,
+            osBuild: osBuild,
+            platform: effectivePlatform,
+            capabilities: Array(effectiveCapabilities),
+            capturedAt: capturedAt,
+            deviceSyncVersion: deviceSyncVersion,
+            components: components
+        )
+    }
 }
