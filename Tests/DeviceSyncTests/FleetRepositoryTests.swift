@@ -216,6 +216,19 @@ struct FleetRepositoryTests {
     }
 
     @Test
+    func applicationEvidenceDoesNotPublishDeveloperNamespace() {
+        let plistEvidence = InventoryService.applicationEvidence(managedVersion: nil)
+        let executableEvidence = InventoryService.applicationEvidence(managedVersion: "1.2.3")
+
+        #expect(plistEvidence == "Installed application; version read from its signed Info.plist.")
+        #expect(executableEvidence == "Installed application; version returned by its managed executable.")
+        #expect(!plistEvidence.localizedCaseInsensitiveContains("bundle"))
+        #expect(!executableEvidence.localizedCaseInsensitiveContains("bundle"))
+        #expect(!plistEvidence.localizedCaseInsensitiveContains("starkpat"))
+        #expect(!executableEvidence.localizedCaseInsensitiveContains("starkpat"))
+    }
+
+    @Test
     func machineIDMustBeRandomUUIDShape() throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

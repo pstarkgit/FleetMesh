@@ -304,7 +304,6 @@ struct InventoryService: Sendable {
         let installedCommit = definition.commitKeys.compactMap {
             info[$0] as? String
         }.first { !$0.isEmpty }
-        let bundleID = info["CFBundleIdentifier"] as? String ?? "unknown bundle"
         let managedVersion = await probeManagedVersion(definition.managedVersionProbe)
 
         return ComponentObservation(
@@ -320,10 +319,17 @@ struct InventoryService: Sendable {
             sourceBranch: source?.branch,
             sourceDirty: source?.dirty,
             isRunning: isRunning,
-            evidence: managedVersion == nil
-                ? "Installed bundle \(bundleID); version read from its signed Info.plist."
-                : "Installed bundle \(bundleID); version returned by its managed executable."
+            evidence: Self.applicationEvidence(managedVersion: managedVersion)
         )
+    }
+
+    /// Shared observations describe how version evidence was obtained without
+    /// publishing a bundle identifier. Developer namespaces can contain a
+    /// username and are not needed for fleet drift evaluation.
+    static func applicationEvidence(managedVersion: String?) -> String {
+        managedVersion == nil
+            ? "Installed application; version read from its signed Info.plist."
+            : "Installed application; version returned by its managed executable."
     }
 
     private func probeManagedVersion(
