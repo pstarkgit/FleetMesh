@@ -1,8 +1,65 @@
 import Foundation
 
+enum FleetMeshBuildIdentity {
+    static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? DeviceSyncVersion.current
+    }
+
+    static var commit: String? {
+        guard let value = (Bundle.main.object(forInfoDictionaryKey: "DSCommit") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    static var footerLabel: String { footerLabel(version: version) }
+
+    static func footerLabel(version: String) -> String { "FleetMesh \(version)" }
+
+    static var detail: String {
+        commit.map { "FleetMesh \(version) · \($0)" } ?? footerLabel
+    }
+}
+
+enum FleetComponentPaths {
+    static func sourceCheckout(componentID: String, homeURL: URL) -> URL? {
+        let relativePath: String
+        switch componentID {
+        case FleetMeshIdentity.componentID: relativePath = "code/device-sync"
+        case "authbar": relativePath = "code/authbar"
+        case "stow": relativePath = "code/Stow"
+        case "murmr-voice": relativePath = "code/Murmur"
+        case "model-bridge": relativePath = "code/ModelBridge"
+        case "ai-continuum": relativePath = "code/ai-continuum"
+        case "harness-sync": relativePath = "harness-sync"
+        default: return nil
+        }
+        return homeURL.appendingPathComponent(relativePath, isDirectory: true)
+    }
+}
+
 enum RevisionIdentity {
     static func matches(_ lhs: String, _ rhs: String) -> Bool {
         lhs == rhs || lhs.hasPrefix(rhs) || rhs.hasPrefix(lhs)
+    }
+
+    static func provesSameBuild(_ observation: ComponentObservation) -> Bool {
+        guard let installedRevision = observation.installedRevision,
+              let sourceRevision = observation.sourceRevision else { return false }
+        if matches(installedRevision.lowercased(), sourceRevision.lowercased()) { return true }
+        guard let installedTree = fullObjectID(observation.installedTree),
+              let sourceTree = fullObjectID(observation.sourceTree) else { return false }
+        return installedTree == sourceTree
+    }
+
+    private static func fullObjectID(_ value: String?) -> String? {
+        guard let value,
+              value.count == 40,
+              value.unicodeScalars.allSatisfy(
+                CharacterSet(charactersIn: "0123456789abcdefABCDEF").contains
+              ) else { return nil }
+        return value.lowercased()
     }
 }
 

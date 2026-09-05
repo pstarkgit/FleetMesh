@@ -4,6 +4,54 @@ import Testing
 
 struct DevicePolicyModelTests {
     @Test
+    func observedBaselineChangeIsLimitedToConfigurationAndThemes() throws {
+        let snapshot = policyMacSnapshot()
+        let manifest = FleetManifest(snapshot: snapshot)
+        let theme = ComponentObservation(
+            id: "codex-themes",
+            name: "Codex themes",
+            kind: .theme,
+            status: .installed,
+            configurationFingerprint: "new-theme-fingerprint",
+            items: ["theme.json"],
+            evidence: "Fresh theme"
+        )
+        let withTheme = try manifest.settingManaged(
+            componentID: theme.id,
+            managed: true,
+            observation: theme,
+            updatedByMachineID: snapshot.machineID
+        )
+        let changedTheme = ComponentObservation(
+            id: theme.id,
+            name: theme.name,
+            kind: .theme,
+            status: .installed,
+            configurationFingerprint: "newer-theme-fingerprint",
+            items: ["theme.json"],
+            evidence: "Changed theme"
+        )
+
+        let updated = try withTheme.settingObservedConfigurationBaseline(
+            componentID: theme.id,
+            observation: changedTheme,
+            updatedByMachineID: snapshot.machineID
+        )
+
+        #expect(updated.target(theme.id)?.expectedConfigurationFingerprint == "newer-theme-fingerprint")
+        #expect(updated.target("authbar") == withTheme.target("authbar"))
+
+        let software = try #require(snapshot.component("authbar"))
+        #expect(throws: FleetManifestError.self) {
+            try updated.settingObservedConfigurationBaseline(
+                componentID: software.id,
+                observation: software,
+                updatedByMachineID: snapshot.machineID
+            )
+        }
+    }
+
+    @Test
     func schemaV1SnapshotAndManifestDecodeAndMigrateWithoutChangingMeaning() throws {
         let snapshot = policyMacSnapshot()
         let manifest = FleetManifest(snapshot: snapshot)

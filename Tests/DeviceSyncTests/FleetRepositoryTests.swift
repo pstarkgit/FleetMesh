@@ -389,6 +389,36 @@ struct FleetRepositoryTests {
     }
 
     @Test
+    func snapshotMayPublishOnlyImmutableGitTreeHashesForMergeProof() throws {
+        let tree = "8908725ae4859bc6c4ec5c2d26835fe572b5a8fa"
+        let observation = ComponentObservation(
+            id: "device-sync",
+            name: "FleetMesh",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.1.9",
+            installedRevision: "77fbc65",
+            sourceVersion: "0.1.9",
+            sourceRevision: "77fbc65",
+            sourceDirty: false,
+            sourceTree: tree,
+            installedTree: tree,
+            evidence: "Immutable merge proof"
+        )
+        let snapshot = repositoryFixtureSnapshot(components: [observation])
+        let json = try #require(String(
+            data: FleetJSON.encoder.encode(snapshot),
+            encoding: .utf8
+        ))
+
+        #expect(json.contains(#""sourceTree""#))
+        #expect(json.contains(#""installedTree""#))
+        #expect(json.contains(tree))
+        #expect(!json.contains("/Users/"))
+        #expect(!json.contains(".git"))
+    }
+
+    @Test
     func applicationEvidenceDoesNotPublishDeveloperNamespace() {
         let plistEvidence = InventoryService.applicationEvidence(managedVersion: nil)
         let executableEvidence = InventoryService.applicationEvidence(managedVersion: "1.2.3")

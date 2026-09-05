@@ -26,6 +26,42 @@ struct DoctorFinding: Identifiable, Hashable, Sendable {
     var canRepair: Bool { disposition == .repairable && recipe != nil }
 }
 
+enum InlineRemediationAction: Equatable, Sendable {
+    case repair
+    case reviewCheckout
+    case updateCheckout
+    case useObservedBaseline
+    case none
+}
+
+enum InlineRemediationPolicy {
+    static func action(
+        drift: ComponentDrift,
+        observation: ComponentObservation?,
+        finding: DoctorFinding?
+    ) -> InlineRemediationAction {
+        if finding?.canRepair == true { return .repair }
+        if finding?.disposition == .protected,
+           observation?.sourceRevision != nil,
+           let installed = observation?.installedVersion,
+           let source = observation?.sourceVersion,
+           VersionIdentity.compare(source, installed) == .orderedAscending {
+            return .updateCheckout
+        }
+        if drift.state == .localChanges, observation?.sourceRevision != nil {
+            return .reviewCheckout
+        }
+        if drift.state == .different,
+           drift.targetBasis == .savedBaseline,
+           observation?.sourceDirty != true,
+           (drift.kind == .configuration || drift.kind == .theme),
+           observation?.configurationFingerprint != nil {
+            return .useObservedBaseline
+        }
+        return .none
+    }
+}
+
 enum DoctorApproval {
     static func matchesPinnedSource(
         approved: ComponentObservation?,
@@ -277,6 +313,18 @@ struct DoctorPlanner: Sendable {
             )
         }
 
+        if let installed = observation?.installedVersion,
+           let source = observation?.sourceVersion,
+           VersionIdentity.compare(source, installed) == .orderedAscending {
+            return DoctorFinding(
+                drift: drift,
+                disposition: .protected,
+                title: "Update the \(drift.name) checkout before repair",
+                detail: "The installed app (\(installed)) is newer than this clean checkout (\(source)). FleetMesh will not run an installer that could downgrade it.",
+                recipe: nil
+            )
+        }
+
         if let expected = target?.expectedSourceRevision,
            let observed = observation?.sourceRevision,
            !RevisionIdentity.matches(expected, observed) {
@@ -387,6 +435,27 @@ struct DoctorCommandResult: Hashable, Sendable {
             .filter { !$0.isEmpty }
         return sections.isEmpty ? nil : sections.joined(separator: "\n")
     }
+
+    var failureSummary: String {
+        if timedOut {
+            return "The product-owned repair exceeded its time limit."
+        }
+        let output = combinedOutput ?? ""
+        let lowercased = output.lowercased()
+        if lowercased.contains("permission denied")
+            || lowercased.contains("operation not permitted")
+            || lowercased.contains("administrator approval")
+            || lowercased.contains("authorization required") {
+            return "Administrator approval is required by the product-owned installer. FleetMesh did not rerun the installer as root."
+        }
+        if let meaningful = output
+            .split(whereSeparator: \Character.isNewline)
+            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .last(where: { !$0.isEmpty }) {
+            return "The product-owned repair exited with status \(exitCode): \(String(meaningful.prefix(280)))"
+        }
+        return "The product-owned repair exited with status \(exitCode)."
+    }
 }
 
 protocol DoctorCommandRunning: Sendable {
@@ -467,14 +536,19 @@ struct ProcessDoctorCommandRunner: DoctorCommandRunning {
                     }
                     if process.isRunning {
                         Darwin.kill(process.processIdentifier, SIGKILL)
+                        let killDeadline = Date().addingTimeInterval(1)
+                        while process.isRunning && Date() < killDeadline {
+                            try? await Task.sleep(for: .milliseconds(100))
+                        }
                     }
                 }
-                process.waitUntilExit()
                 try? outputHandle.synchronize()
                 try? errorHandle.synchronize()
+                try? outputHandle.close()
+                try? errorHandle.close()
 
                 return DoctorCommandResult(
-                    exitCode: process.terminationStatus,
+                    exitCode: process.isRunning ? -1 : process.terminationStatus,
                     standardOutputTail: readTail(outputURL, maximumBytes: maximumCapturedBytes),
                     standardErrorTail: readTail(errorURL, maximumBytes: maximumCapturedBytes),
                     timedOut: timedOut,

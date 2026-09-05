@@ -68,8 +68,8 @@ Snapshots may contain:
 - human-readable redacted machine name and local hostname where safe
 - platform, capabilities, OS family/version/build, model identifier, and
   architecture
-- product version, build, installed revision, source revision, and configuration
-  fingerprint
+- product version, build, installed revision, source revision, immutable
+  installed/source Git tree hashes, and configuration fingerprint
 - theme filenames and aggregate SHA-256 fingerprint
 - source dirty/clean posture
 - observation status: installed, missing, or unknown
@@ -97,7 +97,8 @@ Allowed in shared JSON:
 - random machine IDs
 - redacted display names and safe local host labels
 - platform, capabilities, OS version/build, model identifier, architecture
-- managed component IDs, versions, revisions, status, and fingerprints
+- managed component IDs, versions, revisions, immutable Git tree hashes,
+  status, and fingerprints
 - theme filenames plus aggregate SHA-256 fingerprints
 - whether a known source checkout has uncommitted work
 

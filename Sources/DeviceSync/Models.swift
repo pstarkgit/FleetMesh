@@ -127,6 +127,8 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
     let sourceRevision: String?
     let sourceBranch: String?
     let sourceDirty: Bool?
+    let sourceTree: String?
+    let installedTree: String?
     let configurationFingerprint: String?
     let items: [String]?
     let isRunning: Bool?
@@ -144,6 +146,8 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
         sourceRevision: String? = nil,
         sourceBranch: String? = nil,
         sourceDirty: Bool? = nil,
+        sourceTree: String? = nil,
+        installedTree: String? = nil,
         configurationFingerprint: String? = nil,
         items: [String]? = nil,
         isRunning: Bool? = nil,
@@ -160,6 +164,8 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
         self.sourceRevision = sourceRevision
         self.sourceBranch = sourceBranch
         self.sourceDirty = sourceDirty
+        self.sourceTree = sourceTree
+        self.installedTree = installedTree
         self.configurationFingerprint = configurationFingerprint
         self.items = items
         self.isRunning = isRunning
@@ -345,6 +351,30 @@ struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
             requiredCapabilities: normalized.requiredCapabilities
         )
     }
+
+    func replacingConfigurationFingerprint(_ fingerprint: String) throws -> ManifestTarget {
+        let normalized = normalizedForCurrentSchema()
+        guard kind == .configuration || kind == .theme else {
+            throw FleetManifestError.softwareBaselineIsAutomatic(name)
+        }
+        guard !fingerprint.isEmpty else {
+            throw FleetManifestError.missingObservation(id)
+        }
+        return ManifestTarget(
+            id: normalized.id,
+            name: normalized.name,
+            kind: normalized.kind,
+            required: normalized.required,
+            defaultManaged: normalized.defaultManaged,
+            expectedVersion: normalized.expectedVersion,
+            expectedInstalledRevision: normalized.expectedInstalledRevision,
+            expectedSourceRevision: normalized.expectedSourceRevision,
+            expectedConfigurationFingerprint: fingerprint,
+            supportedPlatforms: normalized.supportedPlatforms,
+            requiredCapabilities: normalized.requiredCapabilities
+        )
+    }
+
 
     private init(
         id: String,
@@ -705,6 +735,32 @@ struct FleetManifest: Codable, Hashable, Sendable {
         )
     }
 
+    func settingObservedConfigurationBaseline(
+        componentID: String,
+        observation: ComponentObservation,
+        updatedByMachineID: String,
+        updatedAt: Date = Date()
+    ) throws -> FleetManifest {
+        guard let index = targets.firstIndex(where: { $0.id == componentID }),
+              observation.id == componentID,
+              let fingerprint = observation.configurationFingerprint else {
+            throw FleetManifestError.missingObservation(componentID)
+        }
+        var updatedTargets = targets
+        updatedTargets[index] = try updatedTargets[index]
+            .replacingConfigurationFingerprint(fingerprint)
+        guard updatedTargets[index] != targets[index] else {
+            throw FleetManifestError.baselineAlreadyMatches(observation.name)
+        }
+        return replacing(
+            targets: updatedTargets,
+            devices: devices,
+            updatedByMachineID: updatedByMachineID,
+            updatedAt: updatedAt
+        )
+    }
+
+
     func enrollmentStatus(for machineID: String) -> DeviceEnrollmentStatus {
         guard let devices else {
             return machineID == updatedByMachineID ? .enrolled : .pending
@@ -967,6 +1023,8 @@ enum FleetManifestError: LocalizedError {
     case devicePolicyUnchanged(String)
     case deviceScopeUnchanged(String)
     case incompatibleDevice(component: String, device: String, reason: String)
+    case softwareBaselineIsAutomatic(String)
+    case baselineAlreadyMatches(String)
 
     var errorDescription: String? {
         switch self {
@@ -988,6 +1046,10 @@ enum FleetManifestError: LocalizedError {
             "\(componentID) already has that scope setting on this device."
         case .incompatibleDevice(let component, let device, let reason):
             "\(component) cannot be required on \(device). \(reason)"
+        case .softwareBaselineIsAutomatic(let name):
+            "\(name) follows the latest verified software version automatically."
+        case .baselineAlreadyMatches(let name):
+            "The saved baseline for \(name) already matches this observation."
         }
     }
 }
@@ -1070,6 +1132,17 @@ struct ComponentDrift: Identifiable, Hashable, Sendable {
     }
 
     var id: String { "\(componentID)-\(state.rawValue)-\(summary)" }
+
+    var targetLabel: String {
+        switch targetBasis {
+        case .latestRepository:
+            "Latest repo"
+        case .savedBaseline:
+            kind == .configuration || kind == .theme
+                ? "Saved baseline"
+                : "Recorded minimum"
+        }
+    }
 }
 
 enum FleetVerdict: String, Sendable {

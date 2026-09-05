@@ -39,4 +39,37 @@ struct FleetMeshIdentityTests {
         #expect(definition.preferredPaths.contains("/Applications/FleetForge.app"))
         #expect(definition.preferredPaths.contains("/Applications/Device Sync.app"))
     }
+
+    @Test
+    func sidebarFooterUsesHumanVisibleFleetMeshVersion() {
+        #expect(FleetMeshBuildIdentity.footerLabel(version: "0.1.9") == "FleetMesh 0.1.9")
+        #expect(FleetMeshBuildIdentity.footerLabel.hasPrefix("FleetMesh "))
+    }
+
+    @Test
+    func softwareFallbackIsLabeledAsRecordedMinimum() {
+        let software = ComponentDrift(
+            componentID: "app",
+            name: "App",
+            kind: .application,
+            state: .aligned,
+            severity: .information,
+            summary: "Current",
+            expected: "1.0.0",
+            observed: "2.0.0"
+        )
+        let theme = ComponentDrift(
+            componentID: "theme",
+            name: "Theme",
+            kind: .theme,
+            state: .aligned,
+            severity: .information,
+            summary: "Current",
+            expected: "abc",
+            observed: "abc"
+        )
+        #expect(software.targetLabel == "Recorded minimum")
+        #expect(theme.targetLabel == "Saved baseline")
+        #expect(FleetTargetBasis.latestRepository.label == "Latest repo")
+    }
 }

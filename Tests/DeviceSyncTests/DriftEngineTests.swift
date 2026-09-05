@@ -86,6 +86,65 @@ struct DriftEngineTests {
     }
 
     @Test
+    func newerSoftwareThanRecordedMinimumIsHealthyWithoutPromotion() {
+        let recorded = fixtureSnapshot(components: [
+            fixtureComponent(version: "26.901.31953"),
+        ])
+        let newer = fixtureSnapshot(components: [
+            fixtureComponent(version: "26.901.41600"),
+        ])
+
+        let assessment = DriftEngine().assess(
+            snapshot: newer,
+            manifest: FleetManifest(snapshot: recorded)
+        )
+        let drift = assessment.drifts.first
+
+        #expect(drift?.state == .aligned)
+        #expect(drift?.targetLabel == "Recorded minimum")
+        #expect(drift?.summary.contains("newer than the recorded minimum") == true)
+        #expect(assessment.attentionCount == 0)
+        #expect(DoctorPlanner().findings(for: assessment, manifest: FleetManifest(snapshot: recorded)).isEmpty)
+    }
+
+    @Test
+    func olderSoftwareThanRecordedMinimumStillNeedsRepair() {
+        let recorded = fixtureSnapshot(components: [
+            fixtureComponent(version: "2.0.0"),
+        ])
+        let older = fixtureSnapshot(components: [
+            fixtureComponent(version: "1.9.0"),
+        ])
+
+        let assessment = DriftEngine().assess(
+            snapshot: older,
+            manifest: FleetManifest(snapshot: recorded)
+        )
+
+        #expect(assessment.drifts.first?.state == .different)
+        #expect(assessment.drifts.first?.summary.contains("older than the recorded minimum") == true)
+        #expect(assessment.attentionCount == 1)
+    }
+
+    @Test
+    func malformedSoftwareVersionCannotBypassRecordedMinimum() {
+        let recorded = fixtureSnapshot(components: [
+            fixtureComponent(version: "2.0.0"),
+        ])
+        let malformed = fixtureSnapshot(components: [
+            fixtureComponent(version: "next"),
+        ])
+
+        let assessment = DriftEngine().assess(
+            snapshot: malformed,
+            manifest: FleetManifest(snapshot: recorded)
+        )
+
+        #expect(assessment.drifts.first?.state == .different)
+        #expect(assessment.attentionCount == 1)
+    }
+
+    @Test
     func noManifestIsUnknownNotHealthy() {
         let assessment = DriftEngine().assess(
             snapshot: fixtureSnapshot(components: [fixtureComponent()]),
