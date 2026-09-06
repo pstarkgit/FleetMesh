@@ -106,6 +106,22 @@ struct DeviceSyncApp: App {
                             rootURL: rootURL
                         )
                     }
+                case .diagnoseRemote(let device):
+                    guard existing.manifest != nil else {
+                        throw HeadlessOperationError.missingManifest
+                    }
+                    guard let connection = state.remoteConnections.first(where: {
+                        $0.machineID.caseInsensitiveCompare(device) == .orderedSame
+                            || $0.displayName.caseInsensitiveCompare(device) == .orderedSame
+                    }) else {
+                        throw HeadlessOperationError.unknownRemoteDevice(device)
+                    }
+                    let remoteSnapshot = try await SSHRemoteInventoryService()
+                        .capture(connection: connection)
+                    read = try await fleetAccess.publish(
+                        remoteSnapshot,
+                        rootURL: rootURL
+                    )
                 case .snapshot:
                     guard existing.manifest != nil else {
                         throw HeadlessOperationError.missingManifest
@@ -130,6 +146,25 @@ struct DeviceSyncApp: App {
                         replacingRevision: manifest.revision,
                         rootURL: rootURL
                     )
+                case .useObservedBaseline(let componentID):
+                    guard let manifest = existing.manifest else {
+                        throw HeadlessOperationError.missingManifest
+                    }
+                    guard let observation = snapshot.component(componentID),
+                          observation.sourceDirty != true else {
+                        throw HeadlessOperationError.freshObservationUnavailable(componentID)
+                    }
+                    let updated = try manifest.settingObservedConfigurationBaseline(
+                        componentID: componentID,
+                        observation: observation,
+                        updatedByMachineID: state.machineID
+                    )
+                    read = try await fleetAccess.publishAndSave(
+                        snapshot,
+                        manifest: updated,
+                        replacingRevision: manifest.revision,
+                        rootURL: rootURL
+                    )
                 case .selfCheck, .migrateDynamoDB:
                     fatalError("early-return operation reached inventory")
                 }
@@ -145,11 +180,6 @@ struct DeviceSyncApp: App {
                         localSnapshot: snapshot
                     )
                 } ?? [:]
-                let assessment = DriftEngine().assess(
-                    snapshot: snapshot,
-                    manifest: read.manifest,
-                    productVersionTargets: productVersionTargets
-                )
                 let allAssessments: [MachineAssessment] = read.machines.compactMap { machine -> MachineAssessment? in
                     guard read.manifest?.enrollmentStatus(for: machine.machineID) == .enrolled else {
                         return nil
@@ -161,17 +191,20 @@ struct DeviceSyncApp: App {
                     )
                 }
                 let reportedIDs = Set(read.machines.map(\.machineID))
-                let missingEnrolled = read.manifest?.devices?.filter {
+                let missingEnrolledDevices = read.manifest?.devices?.filter {
                     $0.enrollment == .enrolled && !reportedIDs.contains($0.machineID)
-                }.count ?? 0
+                } ?? []
                 let fleetVerdict = FleetHealthEvaluator.verdict(
                     manifest: read.manifest,
                     assessments: allAssessments,
                     issueCount: read.issues.count,
-                    missingEnrolledCount: missingEnrolled
+                    missingEnrolledCount: missingEnrolledDevices.count
                 )
                 switch operation {
                 case .snapshot:
+                    print("snapshot: \(authorityDescription)")
+                case .diagnoseRemote(let device):
+                    print("remote diagnosis: \(device)")
                     print("snapshot: \(authorityDescription)")
                 case .adoptBaseline:
                     print("baseline: \(authorityDescription)")
@@ -181,12 +214,30 @@ struct DeviceSyncApp: App {
                     print("baseline: \(authorityDescription)")
                     print("targets: \(read.manifest?.activeTargets.count ?? 0)")
                     print("snapshot: \(authorityDescription)")
+                case .useObservedBaseline(let componentID):
+                    print("component baseline: \(componentID)")
+                    print("baseline: \(authorityDescription)")
+                    print("snapshot: \(authorityDescription)")
                 case .check:
                     print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current): \(fleetVerdict.label)")
                     print("machine: \(snapshot.name) (\(snapshot.hostName))")
                     print("fleet authority: \(authorityDescription)")
                     print("components: \(snapshot.components.filter { $0.status == .installed }.count) installed, \(snapshot.components.filter { $0.status == .missing }.count) missing")
-                    print("fleet: \(read.machines.count) report(s), \(assessment.attentionCount) attention item(s), \(read.issues.count) read issue(s)")
+                    let missingDeviceNames = missingEnrolledDevices.map(\.displayName)
+                    let fleetAttentionCount = HeadlessFleetReport.attentionCount(
+                        assessments: allAssessments,
+                        missingDeviceNames: missingDeviceNames
+                    )
+                    print("fleet: \(read.machines.count) report(s), \(fleetAttentionCount) attention item(s), \(missingEnrolledDevices.count) missing report(s), \(read.issues.count) read issue(s)")
+                    for line in HeadlessFleetReport.findingLines(
+                        assessments: allAssessments,
+                        missingDeviceNames: missingDeviceNames
+                    ) {
+                        print(line)
+                    }
+                    for issue in read.issues {
+                        print("read issue: \(issue.title) | \(issue.detail)")
+                    }
                     if fleetVerdict.headlessExitCode != 0 {
                         exit(fleetVerdict.headlessExitCode)
                     }
@@ -206,8 +257,10 @@ struct DeviceSyncApp: App {
 enum HeadlessOperation: Equatable {
     case selfCheck
     case check
+    case diagnoseRemote(device: String)
     case snapshot
     case adoptBaseline
+    case useObservedBaseline(componentID: String)
     case setManaged(componentID: String, managed: Bool)
     case migrateDynamoDB(
         mode: FleetDynamoDBMigrationMode,
@@ -231,10 +284,16 @@ enum HeadlessOperation: Equatable {
             )
         } else if arguments.contains("--check") {
             self = .check
+        } else if let index = arguments.firstIndex(of: "--diagnose-remote"),
+                  arguments.indices.contains(index + 1) {
+            self = .diagnoseRemote(device: arguments[index + 1])
         } else if arguments.contains("--snapshot") {
             self = .snapshot
         } else if arguments.contains("--adopt-baseline") {
             self = .adoptBaseline
+        } else if let index = arguments.firstIndex(of: "--use-observed-baseline"),
+                  arguments.indices.contains(index + 1) {
+            self = .useObservedBaseline(componentID: arguments[index + 1])
         } else if let index = arguments.firstIndex(of: "--add-to-scope"),
                   arguments.indices.contains(index + 1) {
             self = .setManaged(componentID: arguments[index + 1], managed: true)
@@ -249,9 +308,18 @@ enum HeadlessOperation: Equatable {
 
 private enum HeadlessOperationError: LocalizedError {
     case missingManifest
+    case freshObservationUnavailable(String)
+    case unknownRemoteDevice(String)
 
     var errorDescription: String? {
-        "No readable fleet baseline is available. Connect the existing shared fleet folder, or use --adopt-baseline explicitly to create a new fleet."
+        switch self {
+        case .missingManifest:
+            "No readable fleet baseline is available. Connect the existing shared fleet folder, or use --adopt-baseline explicitly to create a new fleet."
+        case .freshObservationUnavailable(let componentID):
+            "Fresh clean evidence is unavailable for \(componentID). FleetMesh will not change the baseline."
+        case .unknownRemoteDevice(let device):
+            "No private local connection matches \(device). FleetMesh did not run SSH."
+        }
     }
 }
 

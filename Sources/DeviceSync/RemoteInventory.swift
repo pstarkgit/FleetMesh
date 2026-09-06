@@ -324,7 +324,7 @@ struct SSHRemoteInventoryService: RemoteInventoryCapturing {
 
     // No manifest or machine-report value enters this script. It is a fixed,
     // read-only probe and emits only bounded, base64-encoded scalar evidence.
-    private static let probeScript = #"""
+    static let probeScript = #"""
 set -u
 
 b64() {
@@ -482,7 +482,7 @@ else
   emit component.kiro-crew.status missing
   emit component.kiro-crew.running false
 fi
-probe_json_theme kiro-crew-themes "$HOME/.kiro/crew/themes"
+probe_json_theme kiro-crew-themes "$HOME/\#(InventoryService.kiroCrewThemesRelativeDirectory)"
 """#
 }
 
