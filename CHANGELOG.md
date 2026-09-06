@@ -1,3 +1,18 @@
+## 0.1.12 — 2026-09-05
+
+- Made Doctor follow the selected machine. A connected Linux device can now be
+  diagnosed in place through FleetMesh's existing fixed, bounded, read-only SSH
+  probe, while every remote repair control remains disabled.
+- Added verified Linux applicability and remote evidence for KiroCrew and
+  KiroCrew themes, including version, runtime state, bounded relative theme
+  filenames, and a content fingerprint compatible with the Mac inventory.
+- Corrected ai-continuum runtime evidence to recognize its active systemd user
+  service instead of relying only on a process name that Linux may truncate.
+- Corrected Fleet and Doctor machine cards to render Linux devices with a server
+  icon and Linux OS label instead of hardcoded Mac presentation.
+- Kept partial non-Git Harness Sync deployments visible as real drift rather
+  than treating an unversioned directory as proof of baseline alignment.
+
 # Changelog
 
 ## 0.1.11 — 2026-09-05

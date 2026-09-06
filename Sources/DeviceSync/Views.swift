@@ -1204,7 +1204,9 @@ private struct MachineHero: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(DSTheme.color(for: assessment.verdict).opacity(0.11))
-                Image(systemName: "laptopcomputer")
+                Image(systemName: assessment.snapshot.effectivePlatform == .linux
+                    ? "server.rack"
+                    : "laptopcomputer")
                     .font(.system(size: 34, weight: .medium))
                     .foregroundStyle(DSTheme.color(for: assessment.verdict))
             }
@@ -1225,7 +1227,7 @@ private struct MachineHero: View {
                             .clipShape(Capsule())
                     }
                 }
-                Text("\(assessment.snapshot.modelIdentifier) · \(assessment.snapshot.architecture) · macOS \(assessment.snapshot.osVersion)")
+                Text("\(assessment.snapshot.modelIdentifier) · \(assessment.snapshot.architecture) · \(assessment.snapshot.effectivePlatform.label) \(assessment.snapshot.osVersion)")
                     .font(.subheadline)
                     .foregroundStyle(DSTheme.inkSoft)
                 Text("\(assessment.snapshot.hostName) · captured \(relativeDate(assessment.snapshot.capturedAt))")
@@ -1590,9 +1592,14 @@ struct DoctorView: View {
                     DoctorSummary(findings: findings)
 
                     if assessment.snapshot.machineID != store.localSnapshot?.machineID {
+                        let hasLocalConnection = store.selectedDevice?.localConnection != nil
                         IssueBanner(
-                            title: "Open Doctor on this Mac",
-                            detail: "This report is read-only here. FleetMesh never repairs another Mac remotely.",
+                            title: hasLocalConnection
+                                ? "Remote diagnosis is read-only"
+                                : "Published report is read-only here",
+                            detail: hasLocalConnection
+                                ? "Diagnose runs FleetMesh's fixed, bounded SSH probe and publishes fresh redacted evidence. Remote repairs remain disabled."
+                                : "This Mac has no private SSH connection for the selected device. Diagnose it from the controller that added it; remote repairs remain disabled.",
                             color: DSTheme.purple
                         )
                     }
@@ -1628,7 +1635,7 @@ struct DoctorView: View {
                                 } onUseObservedBaseline: { observation in
                                     pendingConfigurationBaseline = observation
                                 } onScanAgain: {
-                                    Task { await store.refresh() }
+                                    Task { await store.diagnoseSelectedMachine() }
                                 }
                             }
                         }
@@ -1709,12 +1716,17 @@ struct DoctorView: View {
             }
             Spacer()
             Button {
-                Task { await store.refresh() }
+                Task { await store.diagnoseSelectedMachine() }
             } label: {
-                Label(store.isRefreshing ? "Scanning…" : "Scan this Mac", systemImage: "stethoscope")
+                Label(
+                    store.isDiagnosingSelectedMachine
+                        ? "Diagnosing…"
+                        : store.selectedMachineDiagnosisLabel,
+                    systemImage: "stethoscope"
+                )
             }
             .buttonStyle(.borderedProminent)
-            .disabled(store.isBusy)
+            .disabled(store.isBusy || !store.canDiagnoseSelectedMachine)
         }
     }
 }

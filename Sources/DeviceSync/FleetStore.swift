@@ -155,6 +155,30 @@ final class FleetStore {
         checkingRemoteDeviceIDs.contains(machineID)
     }
 
+    var canDiagnoseSelectedMachine: Bool {
+        guard let device = selectedDevice else { return false }
+        return device.machineID == localSnapshot?.machineID
+            || device.localConnection != nil
+    }
+
+    var isDiagnosingSelectedMachine: Bool {
+        guard let device = selectedDevice else { return false }
+        if device.machineID == localSnapshot?.machineID {
+            return isRefreshing
+        }
+        return isCheckingIn(device.machineID)
+    }
+
+    var selectedMachineDiagnosisLabel: String {
+        guard let device = selectedDevice else { return "Choose a machine" }
+        if device.machineID == localSnapshot?.machineID {
+            return "Scan this Mac"
+        }
+        return device.localConnection == nil
+            ? "No local connection"
+            : "Diagnose \(device.name)"
+    }
+
     func deviceScopeItems(for machineID: String) -> [FleetScopeItem] {
         guard let device = devices.first(where: { $0.machineID == machineID }) else {
             return []
@@ -267,6 +291,20 @@ final class FleetStore {
             lastError = error.localizedDescription
         }
         await refreshDetectedExistingFleet()
+    }
+
+    func diagnoseSelectedMachine() async {
+        guard !isBusy, let device = selectedDevice else { return }
+        if device.machineID == localSnapshot?.machineID {
+            await refresh()
+            return
+        }
+        guard device.localConnection != nil else {
+            lastError = "This Mac has no private SSH connection for \(device.name). Review its published report here, or diagnose it from the controller that added it."
+            lastActionMessage = nil
+            return
+        }
+        await checkInRemoteDevice(machineID: device.machineID)
     }
 
     func adoptThisMacAsBaseline() async {

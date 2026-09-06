@@ -86,8 +86,11 @@ local Application Support file. It is not synced and is never written to
 
 The SSH probe uses `/usr/bin/ssh`, existing SSH config/agent trust, strict
 destination validation, an 18-second bound, and a fixed read-only script. The
-shared fleet protocol never carries executable commands, and FleetMesh never
-repairs a remote machine over SSH.
+same probe powers explicit check-in from Devices and **Diagnose <device>** from
+Doctor. It reports bounded platform capabilities plus allowlisted component
+evidence, including KiroCrew runtime/version and relative KiroCrew theme names
+with a content fingerprint. The shared fleet protocol never carries executable
+commands, and FleetMesh never repairs a remote machine over SSH.
 
 ## Redaction rules
 

@@ -123,6 +123,66 @@ struct DevicePolicyModelTests {
     }
 
     @Test
+    func verifiedKiroCrewSupportOverridesStaleMacOnlyManifestMetadata() throws {
+        let kiroCrew = ComponentObservation(
+            id: "kiro-crew",
+            name: "Kiro Crew",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.6.0.11",
+            isRunning: true,
+            evidence: "Test"
+        )
+        let themes = ComponentObservation(
+            id: "kiro-crew-themes",
+            name: "Kiro Crew themes",
+            kind: .theme,
+            status: .installed,
+            configurationFingerprint: "kiro-theme-fingerprint",
+            items: ["tidepool/theme.json"],
+            evidence: "Test"
+        )
+        let mac = policySnapshot(
+            policyMacSnapshot(),
+            adding: [kiroCrew, themes]
+        )
+        let linux = policySnapshot(
+            policyLinuxSnapshot(),
+            adding: [kiroCrew, themes]
+        )
+        let current = FleetManifest(snapshot: mac)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: FleetJSON.encoder.encode(current)) as? [String: Any]
+        )
+        object["targets"] = try #require(object["targets"] as? [[String: Any]]).map { value in
+            var target = value
+            if ["kiro-crew", "kiro-crew-themes"].contains(target["id"] as? String) {
+                target["supportedPlatforms"] = ["macos"]
+            }
+            return target
+        }
+        let stale = try FleetJSON.decoder.decode(
+            FleetManifest.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(stale.target("kiro-crew")?.supportedPlatforms == [.macOS])
+        #expect(stale.target("kiro-crew")?.applicability(to: linux).isApplicable == true)
+        #expect(stale.target("kiro-crew-themes")?.applicability(to: linux).isApplicable == true)
+
+        let enrolled = try stale.settingDeviceEnrollment(
+            snapshot: linux,
+            enrolled: true,
+            role: .cloudDesktop,
+            knownSnapshots: [mac, linux],
+            updatedByMachineID: mac.machineID
+        )
+        let assessment = DriftEngine().assess(snapshot: linux, manifest: enrolled)
+        #expect(assessment.drifts.first { $0.componentID == "kiro-crew" }?.state == .aligned)
+        #expect(assessment.drifts.first { $0.componentID == "kiro-crew-themes" }?.state == .aligned)
+    }
+
+    @Test
     func incompatibleRequiredOverrideFailsWithCapabilityReason() throws {
         let mac = policyMacSnapshot()
         let linux = policyLinuxSnapshot()
@@ -197,6 +257,14 @@ struct DevicePolicyModelTests {
         #expect(snapshot.effectivePlatform == .linux)
         #expect(snapshot.effectiveCapabilities.contains(.systemd))
         #expect(snapshot.component("codex-cli")?.installedVersion == "1.2.3")
+        #expect(snapshot.component("kiro-crew")?.installedVersion == "0.6.0.11")
+        #expect(snapshot.component("kiro-crew")?.isRunning == true)
+        #expect(snapshot.component("kiro-crew-themes")?.configurationFingerprint == "theme-fingerprint")
+        #expect(snapshot.component("kiro-crew-themes")?.items == [
+            "singularity-gold.json",
+            "tidepool/theme.json",
+        ])
+        #expect(!snapshotJSON.contains("/home/"))
     }
 
     @Test
@@ -388,6 +456,53 @@ struct DevicePolicyStoreTests {
                 machineID: pending.machineID
             ) == .excluded
         )
+        #expect(await fixture.doctorRunner.callCount() == 0)
+    }
+
+    @Test
+    @MainActor
+    func doctorDiagnosesSelectedRemoteDeviceWithoutRunningRepair() async throws {
+        let connection = try RemoteDeviceConnection(
+            host: "dev-dsk-starkpat-1d-19238b71.us-east-1.amazon.com",
+            displayName: "Dev cloud desktop",
+            role: .cloudDesktop
+        )
+        let kiroCrew = ComponentObservation(
+            id: "kiro-crew",
+            name: "Kiro Crew",
+            kind: .application,
+            status: .installed,
+            installedVersion: "0.6.0.11",
+            isRunning: true,
+            evidence: "Fresh remote diagnosis"
+        )
+        let diagnosedSnapshot = policySnapshot(
+            policyLinuxSnapshot(
+                machineID: connection.machineID,
+                name: connection.displayName
+            ),
+            adding: [kiroCrew]
+        )
+        let fixture = try DeviceStoreFixture(
+            remoteInventory: FixedPolicyRemoteInventory(snapshot: diagnosedSnapshot),
+            remoteConnections: [connection]
+        )
+        defer { fixture.cleanUp() }
+
+        await fixture.store.start()
+        await fixture.store.setDeviceEnrollment(
+            machineID: connection.machineID,
+            enrolled: true,
+            role: .cloudDesktop
+        )
+        fixture.store.selectedMachineID = connection.machineID
+
+        #expect(fixture.store.canDiagnoseSelectedMachine)
+        #expect(fixture.store.selectedMachineDiagnosisLabel == "Diagnose Dev cloud desktop")
+        await fixture.store.diagnoseSelectedMachine()
+
+        #expect(fixture.store.selectedAssessment?.snapshot.component("kiro-crew")?.installedVersion == "0.6.0.11")
+        #expect(fixture.store.lastActionMessage?.contains("published fresh redacted evidence") == true)
         #expect(await fixture.doctorRunner.callCount() == 0)
     }
 
@@ -740,6 +855,14 @@ private struct PolicyRemoteInventory: RemoteInventoryCapturing {
     }
 }
 
+private struct FixedPolicyRemoteInventory: RemoteInventoryCapturing {
+    let snapshot: MachineSnapshot
+
+    func capture(connection: RemoteDeviceConnection) async throws -> MachineSnapshot {
+        snapshot
+    }
+}
+
 private struct FailingPolicyRemoteInventory: RemoteInventoryCapturing {
     func capture(connection: RemoteDeviceConnection) async throws -> MachineSnapshot {
         throw PolicyRemoteInventoryError.testFailure
@@ -789,6 +912,12 @@ private struct SuccessfulSSHRunner: SSHRemoteCommandRunning {
             ("component.codex-cli.status", "installed"),
             ("component.codex-cli.version", "codex-cli 1.2.3"),
             ("component.harness-sync.status", "missing"),
+            ("component.kiro-crew.status", "installed"),
+            ("component.kiro-crew.version", "kirocrew 0.6.0.11"),
+            ("component.kiro-crew.running", "true"),
+            ("component.kiro-crew-themes.status", "installed"),
+            ("component.kiro-crew-themes.fingerprint", "theme-fingerprint"),
+            ("component.kiro-crew-themes.items", "singularity-gold.json\ntidepool/theme.json"),
         ]
         let output = (["FLEETMESH_REMOTE_V1"] + fields.map { key, value in
             "\(key)\t\(Data(value.utf8).base64EncodedString())"
@@ -800,6 +929,27 @@ private struct SuccessfulSSHRunner: SSHRemoteCommandRunning {
             timedOut: false
         )
     }
+}
+
+private func policySnapshot(
+    _ snapshot: MachineSnapshot,
+    adding additions: [ComponentObservation]
+) -> MachineSnapshot {
+    let replacementIDs = Set(additions.map(\.id))
+    return MachineSnapshot(
+        machineID: snapshot.machineID,
+        name: snapshot.name,
+        hostName: snapshot.hostName,
+        modelIdentifier: snapshot.modelIdentifier,
+        architecture: snapshot.architecture,
+        osVersion: snapshot.osVersion,
+        osBuild: snapshot.osBuild,
+        platform: snapshot.effectivePlatform,
+        capabilities: Array(snapshot.effectiveCapabilities),
+        capturedAt: snapshot.capturedAt,
+        deviceSyncVersion: snapshot.deviceSyncVersion,
+        components: snapshot.components.filter { !replacementIDs.contains($0.id) } + additions
+    )
 }
 
 private func policyMacSnapshot(
