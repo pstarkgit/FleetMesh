@@ -1,3 +1,3 @@
 enum DeviceSyncVersion {
-    static let current = "0.1.13"
+    static let current = "0.1.14"
 }

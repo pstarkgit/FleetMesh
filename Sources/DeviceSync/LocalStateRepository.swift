@@ -66,10 +66,24 @@ struct RemoteDeviceConnection: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+enum FleetStorageBackend: String, Codable, Sendable {
+    case json
+    case shadow
+    case dynamodb
+}
+
 struct LocalDeviceState: Codable, Hashable, Sendable {
     let machineID: String
     var fleetRootPath: String
     var displayName: String? = nil
+    // Storage configuration is controller-local and contains identifiers only.
+    // Credentials always come from the standard AWS provider chain.
+    var storageBackend: FleetStorageBackend? = nil
+    var awsProfile: String? = nil
+    var awsRegion: String? = nil
+    var dynamoDBTable: String? = nil
+    var fleetID: String? = nil
+    var cachePath: String? = nil
     // Connection endpoints are private controller state. They never enter a
     // shared manifest or machine report, and credentials stay in ssh-agent,
     // Keychain, or the user's SSH configuration.
@@ -175,6 +189,26 @@ struct LocalStateRepository: Sendable {
         var state = try loadOrCreate()
         let trimmed = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
         state.displayName = trimmed?.isEmpty == false ? trimmed : nil
+        try save(state)
+        return state
+    }
+
+    func updatingStorage(
+        backend: FleetStorageBackend,
+        profile: String? = nil,
+        region: String? = nil,
+        table: String? = nil,
+        fleetID: String? = nil,
+        cachePath: String? = nil
+    ) throws -> LocalDeviceState {
+        var state = try loadOrCreate()
+        state.storageBackend = backend
+        state.awsProfile = profile
+        state.awsRegion = region
+        state.dynamoDBTable = table
+        state.fleetID = fleetID
+        state.cachePath = cachePath
+        _ = try state.dynamoDBConfiguration()
         try save(state)
         return state
     }

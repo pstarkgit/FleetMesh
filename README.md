@@ -33,8 +33,10 @@ older recorded minimum is healthy and never requires manual promotion.
 
 ```mermaid
 flowchart LR
-    Manifest[fleet-manifest.json\nmanifest schema v2] --> Engine[Policy + drift engine]
-    Reports[machines/*.json\nsnapshot schema v1 + additive device fields] --> Engine
+    DDB[DynamoDB control plane\nmanifest + device records] --> Repo[Storage-neutral repository]
+    Cache[Private JSON cache\nstale fallback only] --> Repo
+    Legacy[Legacy JSON\nimport/export + rollback] --> Repo
+    Repo --> Engine[Policy + drift engine]
     Engine --> Menu[Menu-bar command center]
     Engine --> App[Full FleetMesh app]
     App --> Devices[Devices + per-device scope]
@@ -66,10 +68,13 @@ shown truthfully as not applicable rather than as drift.
 
 ## Fleet defaults and managed items
 
-Fleet defaults live in `fleet-manifest.json`. They define the managed catalog,
-desired versions or fingerprints, device enrollment, roles, and per-device
-overrides. Changing fleet defaults, enrolling or removing a device, and marking
-an item Required or Excluded are explicit desired-state actions.
+Fleet defaults live in the control plane's logical manifest record. DynamoDB is
+the active authority; `fleet-manifest.json` remains the compatible import,
+export, private-cache, and rollback representation. The manifest defines the
+managed catalog, desired versions or fingerprints, device enrollment, roles,
+and per-device overrides. Changing fleet defaults, enrolling or removing a
+device, and marking an item Required or Excluded are explicit desired-state
+actions with conditional revision checks.
 
 Managed software posture compares the installed version with a product-owned
 latest-version source when one is available. Murmr Voice, for example, uses its
@@ -102,9 +107,9 @@ Crew state.
 ## Remote check-in
 
 FleetMesh can add a Linux device over SSH using a local-only endpoint record.
-The endpoint or SSH alias is stored only in this Mac's legacy local Application
+The endpoint or SSH alias is stored only in this Mac's local Application
 Support state so this controller can check the device in again. It is never
-written to `fleet-manifest.json` or any shared machine snapshot.
+written to the logical manifest, a shared device payload, or DynamoDB.
 
 Remote inventory uses the system `/usr/bin/ssh`, the user's existing SSH config
 and agent, strict destination validation, and a fixed bounded read-only probe.
@@ -114,39 +119,45 @@ never executes commands from synced JSON and never repairs a remote device.
 
 ## Privacy contract
 
-The shared fleet folder contains small, atomic, human-readable JSON only:
+The shared control plane contains one manifest record and one current record per
+random machine ID:
 
 ```text
-Device Sync/
-├── fleet-manifest.json
-└── machines/
-    ├── <random-machine-id>.json
-    └── ...
+FLEET#<fleet-id>  / STATE  — desired-state manifest
+DEVICE#<uuid>     / STATE  — redacted device evidence
+GSI1: FLEET#<fleet-id>     — complete fleet view
 ```
 
-Machine IDs are random local IDs. Shared JSON must not contain serial numbers,
-hardware UUIDs, usernames, home paths, SSH endpoints, secrets, cookies, tokens,
-Keychain material, raw configuration, SQLite/WAL files, sockets, or live
-database copies. Missing or unreadable evidence is reported as unknown/missing,
-never assumed healthy.
+Machine IDs are random local IDs. DynamoDB payloads and the private JSON cache
+must not contain serial numbers, hardware UUIDs, usernames, home paths, SSH
+endpoints, credentials, cookies, tokens, Keychain material, raw configuration,
+source branch or worktree state, SQLite/WAL files, sockets, or live database
+copies. Missing or unreadable evidence is reported as unknown/missing, never
+assumed healthy.
 
-The default shared folder is
-`~/Library/CloudStorage/OneDrive-amazon.com/Device Sync` when that OneDrive
-root exists. Otherwise FleetMesh uses its local Application Support folder until
-the user points it at the shared fleet folder.
+AWS credentials come from a selected local profile. FleetMesh stores only the
+profile name, Region, table, fleet ID, and cache path in local state; it never
+stores credentials in fleet records. Runtime roles are separated into reader,
+reporter, and controller policies. The reporter can write only `DEVICE#*`
+partitions, while policy changes require the controller role.
+
+Legacy OneDrive JSON remains available for one-time import, explicit export,
+and rollback evidence. The guarded migration command imports idempotently,
+compares canonical manifest and device hashes, and persists shadow or DynamoDB
+mode only after an exact match.
 
 On a new Mac:
 
-1. Let OneDrive finish syncing the existing `Device Sync` folder.
-2. Open FleetMesh and connect the folder containing `fleet-manifest.json`.
-3. Review the redacted evidence and compatible inherited defaults.
-4. Choose **Join this Mac** and confirm its device role.
-5. Continue to Bootstrap to review any required installations or updates.
+1. Configure the same local AWS profile, Region, table, and fleet ID.
+2. Refresh FleetMesh and review the redacted evidence and inherited defaults.
+3. Choose **Join this Mac** and confirm its device role.
+4. Continue to Bootstrap to review any required installations or updates.
 
 FleetMesh never creates or replaces a baseline during an ordinary scan. If the
-manifest is missing or unreadable, it waits for sync or asks for the correct
-folder. Creating a new fleet requires the explicit baseline action (or the
-explicit `--adopt-baseline` recovery command).
+manifest is missing or unreadable, it reports the authority failure and waits.
+Creating a new fleet requires the explicit baseline action; migration and
+cutover require the explicit `--migrate-dynamodb` command and optional
+`--cutover` flag.
 
 ## Doctor
 

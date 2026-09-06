@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Least-privilege managed policies for the FleetMesh control plane
+
+Parameters:
+  TableArn:
+    Type: String
+  FleetID:
+    Type: String
+    Default: primary
+    AllowedPattern: '[A-Za-z0-9_.-]{1,128}'
+
+Resources:
+  FleetMeshReaderPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Read FleetMesh manifest and device evidence
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:Query
+            Resource:
+              - !Ref TableArn
+              - !Sub '${TableArn}/index/GSI1'
+
+  FleetMeshReporterPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Read FleetMesh state and publish device evidence only
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:Query
+            Resource:
+              - !Ref TableArn
+              - !Sub '${TableArn}/index/GSI1'
+          - Effect: Allow
+            Action:
+              - dynamodb:PutItem
+            Resource: !Ref TableArn
+            Condition:
+              ForAllValues:StringLike:
+                dynamodb:LeadingKeys:
+                  - 'DEVICE#*'
+
+  FleetMeshControllerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Manage FleetMesh policy and publish device evidence
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:Query
+              - dynamodb:PutItem
+            Resource:
+              - !Ref TableArn
+              - !Sub '${TableArn}/index/GSI1'
+
+  FleetMeshReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Read-only FleetMesh runtime role
+      MaxSessionDuration: 43200
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/Admin'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref FleetMeshReaderPolicy
+      Tags:
+        - Key: purpose
+          Value: fleetmesh-reader
+        - Key: auto-delete
+          Value: 'no'
+
+  FleetMeshReporterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Device-reporting FleetMesh runtime role
+      MaxSessionDuration: 43200
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/Admin'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref FleetMeshReporterPolicy
+      Tags:
+        - Key: purpose
+          Value: fleetmesh-reporter
+        - Key: auto-delete
+          Value: 'no'
+
+  FleetMeshControllerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Policy-controller FleetMesh runtime role
+      MaxSessionDuration: 43200
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/Admin'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref FleetMeshControllerPolicy
+      Tags:
+        - Key: purpose
+          Value: fleetmesh-controller
+        - Key: auto-delete
+          Value: 'no'
+
+Outputs:
+  ReaderPolicyArn:
+    Value: !Ref FleetMeshReaderPolicy
+  ReporterPolicyArn:
+    Value: !Ref FleetMeshReporterPolicy
+  ControllerPolicyArn:
+    Value: !Ref FleetMeshControllerPolicy
+  ReaderRoleArn:
+    Value: !GetAtt FleetMeshReaderRole.Arn
+  ReporterRoleArn:
+    Value: !GetAtt FleetMeshReporterRole.Arn
+  ControllerRoleArn:
+    Value: !GetAtt FleetMeshControllerRole.Arn

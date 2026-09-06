@@ -1,0 +1,63 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: FleetMesh dedicated DynamoDB control plane
+
+Parameters:
+  TableName:
+    Type: String
+    Default: fleetmesh-control-plane
+    AllowedPattern: '[A-Za-z0-9_.-]{3,255}'
+
+Resources:
+  FleetMeshTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      Tags:
+        - Key: owner
+          Value: starkpat
+        - Key: purpose
+          Value: fleetmesh-control-plane
+        - Key: auto-delete
+          Value: 'no'
+
+Outputs:
+  TableName:
+    Value: !Ref FleetMeshTable
+  TableArn:
+    Value: !GetAtt FleetMeshTable.Arn
+  FleetIndexName:
+    Value: GSI1
