@@ -1,3 +1,20 @@
+## 0.1.15 — 2026-09-06
+
+- Made `--check` report fleet-wide attention totals and deterministic per-device
+  findings with safe expected and observed evidence instead of showing only the
+  local machine's count.
+- Added guarded headless commands for read-only remote diagnosis and explicit
+  clean component-baseline adoption; neither command executes remote repair or
+  accepts manifest-provided commands.
+- Corrected KiroCrew version discovery to recognize its current managed
+  `~/.local/bin` installation before falling back to the coarse app bundle
+  version.
+- Corrected local and Linux KiroCrew theme inventory to use the current
+  workspace theme directory, with regression coverage keeping both probes on
+  the same path.
+- Preserved private SSH endpoints, bounded remote evidence, conditional
+  manifest writes, and the least-privilege DynamoDB authority model.
+
 ## 0.1.14 — 2026-09-06
 
 - Migrated shared fleet authority from OneDrive JSON to a protected DynamoDB

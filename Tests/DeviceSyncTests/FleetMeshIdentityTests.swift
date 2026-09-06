@@ -7,6 +7,24 @@ struct FleetMeshIdentityTests {
         #expect(HeadlessOperation(arguments: ["DeviceSync", "--self-check"]) == .selfCheck)
         #expect(HeadlessOperation(arguments: ["DeviceSync", "--check"]) == .check)
     }
+
+    @Test
+    func remoteDiagnosisCommandRequiresExplicitDevice() {
+        #expect(
+            HeadlessOperation(arguments: ["DeviceSync", "--diagnose-remote", "dev-dsk"])
+                == .diagnoseRemote(device: "dev-dsk")
+        )
+        #expect(HeadlessOperation(arguments: ["DeviceSync", "--diagnose-remote"]) == nil)
+    }
+
+    @Test
+    func observedBaselineCommandRequiresExplicitComponentID() {
+        #expect(
+            HeadlessOperation(arguments: ["DeviceSync", "--use-observed-baseline", "harness-sync"])
+                == .useObservedBaseline(componentID: "harness-sync")
+        )
+        #expect(HeadlessOperation(arguments: ["DeviceSync", "--use-observed-baseline"]) == nil)
+    }
     @Test
     func dynamoDBMigrationArgumentsAreExplicitAndNonSecret() {
         let arguments = [
@@ -61,6 +79,27 @@ struct FleetMeshIdentityTests {
         #expect(definition.preferredPaths.first == "/Applications/FleetMesh.app")
         #expect(definition.preferredPaths.contains("/Applications/FleetForge.app"))
         #expect(definition.preferredPaths.contains("/Applications/Device Sync.app"))
+    }
+
+    @Test
+    func kiroCrewVersionProbeIncludesCurrentManagedInstallLocation() throws {
+        let definition = try #require(
+            InventoryService.applicationDefinitions.first { $0.id == "kiro-crew" }
+        )
+        let candidates = try #require(definition.managedVersionProbe?.executableCandidates)
+        #expect(candidates.contains("~/.toolbox/bin/kirocrew"))
+        #expect(candidates.contains("~/.local/bin/kirocrew"))
+    }
+
+    @Test
+    func kiroCrewThemesUseWorkspaceDirectory() {
+        #expect(InventoryService.kiroCrewThemesRelativeDirectory == ".kiro/crew/workspace/themes")
+        #expect(
+            SSHRemoteInventoryService.probeScript.contains(
+                "$HOME/.kiro/crew/workspace/themes"
+            )
+        )
+        #expect(!SSHRemoteInventoryService.probeScript.contains("$HOME/.kiro/crew/themes"))
     }
 
     @Test

@@ -203,10 +203,19 @@ Headless verification:
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --check
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --self-check
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --snapshot
+/Applications/FleetMesh.app/Contents/MacOS/DeviceSync --diagnose-remote <device-name-or-id>
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --adopt-baseline
+/Applications/FleetMesh.app/Contents/MacOS/DeviceSync --use-observed-baseline <component-id>
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --add-to-scope <component-id>
 /Applications/FleetMesh.app/Contents/MacOS/DeviceSync --remove-from-scope <component-id>
 ```
+
+`--check` prints the fleet-wide count plus one bounded finding line per stale,
+missing, unknown, or drifting managed item. `--diagnose-remote` runs only the
+fixed read-only SSH inventory probe for a configured private device and
+publishes redacted evidence. `--use-observed-baseline` requires a fresh clean
+local configuration or theme observation and performs a conditional manifest
+write; it never installs software or repairs a remote device.
 
 The installer registers a per-user LaunchAgent that publishes this device's
 snapshot at login and every six hours. Scheduled publication can update only

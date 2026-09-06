@@ -320,6 +320,8 @@ extension InventoryCapturing {
 }
 
 struct InventoryService: Sendable {
+    static let kiroCrewThemesRelativeDirectory = ".kiro/crew/workspace/themes"
+
     let homeURL: URL
     let commandRunner: any CommandRunning
 
@@ -559,7 +561,10 @@ struct InventoryService: Sendable {
                 commitKeys: [],
                 processNames: ["KiroCrew"],
                 managedVersionProbe: ManagedVersionProbeDefinition(
-                    executableCandidates: ["~/.toolbox/bin/kirocrew"],
+                    executableCandidates: [
+                        "~/.toolbox/bin/kirocrew",
+                        "~/.local/bin/kirocrew",
+                    ],
                     arguments: ["--version"]
                 )
             ),
@@ -794,7 +799,7 @@ struct InventoryService: Sendable {
             ThemeProbeDefinition(
                 id: "kiro-crew-themes",
                 name: "Kiro Crew themes",
-                relativeDirectory: ".kiro/crew/themes",
+                relativeDirectory: Self.kiroCrewThemesRelativeDirectory,
                 allowedExtensions: ["json"],
                 recursive: true
             ),
