@@ -732,9 +732,22 @@ final class FleetStore {
             for: finding,
             homeURL: doctorHomeURL
         ) else { return false }
+        return canReviewCheckout(componentID: finding.id)
+            && request.workspaceURL.standardizedFileURL
+                == FleetComponentPaths.sourceCheckout(
+                    componentID: finding.id,
+                    homeURL: doctorHomeURL
+                )?.standardizedFileURL
+    }
+
+    func canReviewCheckout(componentID: String) -> Bool {
+        guard let checkout = FleetComponentPaths.sourceCheckout(
+            componentID: componentID,
+            homeURL: doctorHomeURL
+        ) else { return false }
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(
-            atPath: request.workspaceURL.path,
+            atPath: checkout.path,
             isDirectory: &isDirectory
         ) && isDirectory.boolValue
     }
