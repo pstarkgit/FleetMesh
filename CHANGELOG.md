@@ -18,7 +18,8 @@
 - Kept baseline adoption separate. After the checkout is clean, FleetMesh scans
   again and presents a **Decision required** card with a confirmed **Use observed
   as baseline…** action only if the committed configuration changed. Doctor no
-  longer misroutes a clean committed fingerprint difference to bootstrap.
+  longer misroutes a clean committed fingerprint difference to bootstrap, and
+  **Review changes** remains available after the checkout becomes clean.
 
 ## 0.1.10 — 2026-09-05
 

@@ -1617,7 +1617,8 @@ struct DoctorView: View {
                                     isCodexResolving: store.isLaunchingCodexResolution,
                                     isLocalMachine: assessment.snapshot.machineID == store.localSnapshot?.machineID,
                                     doctorBusy: store.isBusy,
-                                    canResolveCheckout: store.canResolveCheckoutWithCodex(finding)
+                                    canResolveCheckout: store.canResolveCheckoutWithCodex(finding),
+                                    canReviewCheckout: store.canReviewCheckout(componentID: finding.id)
                                 ) {
                                     pendingRepair = finding
                                 } onResolveWithCodex: {
@@ -1853,6 +1854,7 @@ private struct DoctorFindingRow: View {
     let isLocalMachine: Bool
     let doctorBusy: Bool
     let canResolveCheckout: Bool
+    let canReviewCheckout: Bool
     let onRepair: () -> Void
     let onResolveWithCodex: () -> Void
     let onReviewCheckout: () -> Void
@@ -1924,7 +1926,7 @@ private struct DoctorFindingRow: View {
                             .accessibilityIdentifier("doctor.resolveWithCodex.\(finding.id)")
                         Button("Review changes", action: onReviewCheckout)
                             .buttonStyle(.bordered)
-                            .disabled(doctorBusy || !isLocalMachine || !canResolveCheckout)
+                            .disabled(doctorBusy || !isLocalMachine || !canReviewCheckout)
                             .accessibilityIdentifier("doctor.reviewCheckout.\(finding.id)")
                         Button("Scan again", action: onScanAgain)
                             .buttonStyle(.bordered)
@@ -1956,7 +1958,7 @@ private struct DoctorFindingRow: View {
                         .accessibilityIdentifier("doctor.useObservedBaseline.\(finding.id)")
                         Button("Review changes", action: onReviewCheckout)
                             .buttonStyle(.bordered)
-                            .disabled(doctorBusy || !isLocalMachine || !canResolveCheckout)
+                            .disabled(doctorBusy || !isLocalMachine || !canReviewCheckout)
                             .accessibilityIdentifier("doctor.reviewCheckout.\(finding.id)")
                         Button("Scan again", action: onScanAgain)
                             .buttonStyle(.bordered)

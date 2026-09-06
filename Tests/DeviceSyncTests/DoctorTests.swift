@@ -159,6 +159,38 @@ struct DoctorPlannerTests {
     }
 
     @Test
+    @MainActor
+    func cleanHarnessCheckoutCanBeReviewedWithoutBeingCodexResolvable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fleetmesh-clean-review-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let checkout = root.appendingPathComponent("harness-sync", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkout, withIntermediateDirectories: true)
+        let store = FleetStore(doctorHomeURL: root)
+        let finding = DoctorFinding(
+            drift: ComponentDrift(
+                componentID: "harness-sync",
+                name: "Harness Sync",
+                kind: .configuration,
+                state: .different,
+                severity: .attention,
+                summary: "Committed configuration differs",
+                expected: "aaaaaaaaaaaa",
+                observed: "bbbbbbbbbbbb",
+                targetBasis: .savedBaseline
+            ),
+            disposition: .manual,
+            title: "Review committed configuration",
+            detail: "Review before adopting.",
+            recipe: nil
+        )
+
+        #expect(store.canReviewCheckout(componentID: finding.id))
+        #expect(!store.canResolveCheckoutWithCodex(finding))
+        #expect(!store.canReviewCheckout(componentID: "unknown-component"))
+    }
+
+    @Test
     func inlinePolicyRoutesEachFindingToOnlyItsSafeAction() {
         let repairObservation = ComponentObservation(
             id: "murmr-voice",
