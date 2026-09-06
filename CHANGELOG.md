@@ -1,3 +1,16 @@
+## 0.1.13 — 2026-09-05
+
+- Corrected full Harness Sync to Mac-only product applicability. Its own product
+  contract defines Linux cloud desktops as setup targets, not sync peers, and
+  its bootstrap is Mac-specific and secret-touching.
+- Made code-owned product metadata override stale manifests that previously
+  persisted Harness Sync as Linux-supported, so dev-dsk now reports it as Not
+  applicable instead of a missing required configuration.
+- Kept Linux-specific backup scripts untouched and avoided inventing or running
+  an unsupported remote installer.
+- Added regressions proving Linux Harness Sync creates no fleet attention,
+  Bootstrap step, or Doctor finding while Mac posture remains managed.
+
 ## 0.1.12 — 2026-09-05
 
 - Made Doctor follow the selected machine. A connected Linux device can now be
