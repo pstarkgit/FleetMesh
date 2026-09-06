@@ -58,8 +58,8 @@ evidence, but it remains Pending until explicitly enrolled. Removed devices stay
 visible as history and missing evidence, but they do not drive fleet health.
 
 Per-device scope lets one baseline support unlike machines. For example, a Mac
-workstation can inherit Stow, AuthBar, Kiro Crew, and menu-bar expectations,
-while a Linux cloud desktop can require ai-continuum, Codex CLI, Harness Sync,
+workstation can inherit Stow, AuthBar, Harness Sync, Kiro Crew, and menu-bar
+expectations, while a Linux cloud desktop can require ai-continuum, Codex CLI,
 Kiro Crew, and Kiro Crew themes. Kiro Crew is a managed desktop app on macOS
 and a toolbox-owned gateway service on Linux. Incompatible inherited items are
 shown truthfully as not applicable rather than as drift.

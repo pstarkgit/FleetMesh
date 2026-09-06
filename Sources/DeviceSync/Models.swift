@@ -565,7 +565,9 @@ struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
         for componentID: String
     ) -> [DevicePlatform]? {
         switch componentID {
-        case "ai-continuum", "codex-cli", "harness-sync", "kiro-crew", "kiro-crew-themes":
+        case "harness-sync":
+            [.macOS]
+        case "ai-continuum", "codex-cli", "kiro-crew", "kiro-crew-themes":
             [.macOS, .linux]
         default:
             nil

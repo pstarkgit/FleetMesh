@@ -105,8 +105,10 @@ Current product boundaries:
 - Codex Desktop and Codex CLI remain observable/managed where in scope.
 - Codex Voice remains installed/observable evidence but is outside the managed
   daily baseline.
-- `~/harness-sync` owns recurring Claude/OMP configuration linking; FleetMesh
-  reports and orchestrates it but does not rewrite files it owns.
+- `~/harness-sync` owns recurring Claude/OMP configuration linking on Mac sync
+  peers; FleetMesh reports and orchestrates it there but does not rewrite files
+  it owns. Linux cloud desktops are setup targets, not Harness Sync peers, and
+  any Linux-specific backup scripts remain separate operational artifacts.
 
 ## Rename compatibility
 

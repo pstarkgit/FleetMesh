@@ -183,6 +183,69 @@ struct DevicePolicyModelTests {
     }
 
     @Test
+    func harnessSyncIsMacOnlyEvenWhenManifestSaysLinux() throws {
+        let installedHarness = ComponentObservation(
+            id: "harness-sync",
+            name: "Harness Sync",
+            kind: .configuration,
+            status: .installed,
+            sourceRevision: "aaaaaaaaaaaa",
+            sourceDirty: false,
+            configurationFingerprint: "aaaaaaaaaaaa",
+            evidence: "Test"
+        )
+        let missingHarness = ComponentObservation(
+            id: "harness-sync",
+            name: "Harness Sync",
+            kind: .configuration,
+            status: .missing,
+            evidence: "Not a Linux sync peer"
+        )
+        let mac = policySnapshot(policyMacSnapshot(), adding: [installedHarness])
+        let linux = policySnapshot(policyLinuxSnapshot(), adding: [missingHarness])
+        let current = FleetManifest(snapshot: mac)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: FleetJSON.encoder.encode(current)) as? [String: Any]
+        )
+        object["targets"] = try #require(object["targets"] as? [[String: Any]]).map { value in
+            var target = value
+            if target["id"] as? String == "harness-sync" {
+                target["supportedPlatforms"] = ["macos", "linux"]
+            }
+            return target
+        }
+        let stale = try FleetJSON.decoder.decode(
+            FleetManifest.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        let target = try #require(stale.target("harness-sync"))
+
+        #expect(target.supportedPlatforms == [.macOS, .linux])
+        #expect(target.applicability(to: mac).isApplicable)
+        #expect(!target.applicability(to: linux).isApplicable)
+        #expect(target.applicability(to: linux).reason.contains("supports Mac, not Linux"))
+
+        let enrolled = try stale.settingDeviceEnrollment(
+            snapshot: linux,
+            enrolled: true,
+            role: .cloudDesktop,
+            knownSnapshots: [mac, linux],
+            updatedByMachineID: mac.machineID
+        )
+        let assessment = DriftEngine().assess(snapshot: linux, manifest: enrolled)
+        let drift = try #require(assessment.drifts.first { $0.componentID == "harness-sync" })
+        #expect(drift.state == .notApplicable)
+        #expect(drift.severity == .information)
+        #expect(assessment.attentionCount == 0)
+        #expect(!DoctorPlanner().findings(for: assessment, manifest: enrolled).contains {
+            $0.id == "harness-sync"
+        })
+        #expect(!BootstrapPlanner().plan(for: assessment).contains {
+            $0.componentID == "harness-sync"
+        })
+    }
+
+    @Test
     func incompatibleRequiredOverrideFailsWithCapabilityReason() throws {
         let mac = policyMacSnapshot()
         let linux = policyLinuxSnapshot()
