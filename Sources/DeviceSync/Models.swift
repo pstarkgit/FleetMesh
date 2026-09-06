@@ -423,10 +423,13 @@ struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
         platform: DevicePlatform,
         capabilities: Set<DeviceCapability>
     ) -> ComponentApplicability {
-        let platforms = supportedPlatforms ?? Self.supportedPlatforms(
-            for: id,
-            observedOn: .macOS
-        )
+        // Product support is code-owned metadata. It corrects older manifests
+        // that persisted a Mac-only value before a managed product gained a
+        // verified Linux installation path. Per-device Excluded remains the
+        // explicit policy control for a supported product that is not desired.
+        let platforms = Self.knownSupportedPlatforms(for: id)
+            ?? supportedPlatforms
+            ?? Self.supportedPlatforms(for: id, observedOn: .macOS)
         guard platforms.contains(platform) else {
             return ComponentApplicability(
                 isApplicable: false,
@@ -435,7 +438,8 @@ struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
         }
 
         let required = Set(requiredCapabilities ?? []).union(Self.capabilityRequirements(
-            for: kind,
+            for: id,
+            kind: kind,
             platform: platform
         ))
         let missing = required.subtracting(capabilities)
@@ -460,10 +464,9 @@ struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
             expectedInstalledRevision: expectedInstalledRevision,
             expectedSourceRevision: expectedSourceRevision,
             expectedConfigurationFingerprint: expectedConfigurationFingerprint,
-            supportedPlatforms: supportedPlatforms ?? Self.supportedPlatforms(
-                for: id,
-                observedOn: .macOS
-            ),
+            supportedPlatforms: Self.knownSupportedPlatforms(for: id)
+                ?? supportedPlatforms
+                ?? Self.supportedPlatforms(for: id, observedOn: .macOS),
             requiredCapabilities: requiredCapabilities ?? []
         )
     }
@@ -508,7 +511,6 @@ struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
         )
     }
 
-
     private init(
         id: String,
         name: String,
@@ -536,18 +538,37 @@ struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
     }
 
     private static func capabilityRequirements(
-        for kind: ComponentKind,
+        for componentID: String,
+        kind: ComponentKind,
         platform: DevicePlatform
     ) -> [DeviceCapability] {
+        if componentID == "kiro-crew", platform == .linux {
+            // KiroCrew is a managed desktop app on macOS and a headless
+            // toolbox-owned gateway service on Linux.
+            return [.shell, .systemd]
+        }
         switch kind {
         case .application:
-            platform == .macOS ? [.graphicalSession, .macOSApplications] : [.graphicalSession]
+            return platform == .macOS
+                ? [.graphicalSession, .macOSApplications]
+                : [.graphicalSession]
         case .commandLineTool:
-            [.shell]
+            return [.shell]
         case .service:
-            platform == .macOS ? [.launchd] : [.systemd]
+            return platform == .macOS ? [.launchd] : [.systemd]
         case .configuration, .theme:
-            [.configurationFiles]
+            return [.configurationFiles]
+        }
+    }
+
+    private static func knownSupportedPlatforms(
+        for componentID: String
+    ) -> [DevicePlatform]? {
+        switch componentID {
+        case "ai-continuum", "codex-cli", "harness-sync", "kiro-crew", "kiro-crew-themes":
+            [.macOS, .linux]
+        default:
+            nil
         }
     }
 
@@ -555,12 +576,7 @@ struct ManifestTarget: Codable, Identifiable, Hashable, Sendable {
         for componentID: String,
         observedOn platform: DevicePlatform
     ) -> [DevicePlatform] {
-        switch componentID {
-        case "ai-continuum", "codex-cli", "harness-sync":
-            [.macOS, .linux]
-        default:
-            [platform]
-        }
+        knownSupportedPlatforms(for: componentID) ?? [platform]
     }
 }
 

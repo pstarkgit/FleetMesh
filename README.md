@@ -59,9 +59,10 @@ visible as history and missing evidence, but they do not drive fleet health.
 
 Per-device scope lets one baseline support unlike machines. For example, a Mac
 workstation can inherit Stow, AuthBar, Kiro Crew, and menu-bar expectations,
-while a Linux cloud desktop can require ai-continuum, Codex CLI, and
-harness-sync but mark Mac-only apps as not applicable. Incompatible inherited
-items are shown truthfully as not applicable rather than as drift.
+while a Linux cloud desktop can require ai-continuum, Codex CLI, Harness Sync,
+Kiro Crew, and Kiro Crew themes. Kiro Crew is a managed desktop app on macOS
+and a toolbox-owned gateway service on Linux. Incompatible inherited items are
+shown truthfully as not applicable rather than as drift.
 
 ## Fleet defaults and managed items
 
@@ -107,8 +108,9 @@ written to `fleet-manifest.json` or any shared machine snapshot.
 
 Remote inventory uses the system `/usr/bin/ssh`, the user's existing SSH config
 and agent, strict destination validation, and a fixed bounded read-only probe.
-FleetMesh never executes commands from synced JSON and never repairs a remote
-device.
+Selecting a connected Linux device in Doctor exposes **Diagnose <device>**, which
+reuses that same probe and publishes fresh redacted evidence in place. FleetMesh
+never executes commands from synced JSON and never repairs a remote device.
 
 ## Privacy contract
 

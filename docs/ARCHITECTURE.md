@@ -141,11 +141,14 @@ Application Support/shared-fleet folders, LaunchAgent
 
 ## Doctor boundary
 
-Bootstrap is the full new-device sequence and Doctor is the local repair
-executor. Doctor uses typed, built-in product actions with command preview,
-explicit confirmation, bounded execution, private local output capture, and
-mandatory postflight probes. It never turns shell snippets or other values from
-synced JSON into executable code.
+Bootstrap is the full new-device sequence and Doctor separates diagnosis from
+mutation. For this Mac, Doctor is the local repair executor. For a connected
+Linux device, Doctor may refresh evidence only by reusing the same typed,
+bounded, fixed SSH probe as device check-in. Remote repair remains prohibited.
+Doctor uses typed, built-in product actions with command preview, explicit
+confirmation, bounded execution, private local output capture, and mandatory
+postflight probes. It never turns shell snippets or other values from synced
+JSON into executable code.
 
 Before execution, Doctor publishes a fresh installed-state snapshot and
 re-evaluates the exact component. For source-based recipes it separately checks

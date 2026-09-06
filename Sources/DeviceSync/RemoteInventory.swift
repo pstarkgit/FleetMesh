@@ -214,6 +214,18 @@ struct SSHRemoteInventoryService: RemoteInventoryCapturing {
                 kind: .configuration,
                 values: values
             ),
+            component(
+                id: "kiro-crew",
+                name: "Kiro Crew",
+                kind: .application,
+                values: values
+            ),
+            component(
+                id: "kiro-crew-themes",
+                name: "Kiro Crew themes",
+                kind: .theme,
+                values: values
+            ),
         ]
 
         return MachineSnapshot(
@@ -240,6 +252,29 @@ struct SSHRemoteInventoryService: RemoteInventoryCapturing {
     ) -> ComponentObservation {
         let prefix = "component.\(id)."
         let status = ObservationStatus(rawValue: values[prefix + "status"] ?? "unknown") ?? .unknown
+        let fingerprint: String?
+        if kind == .theme {
+            fingerprint = values[prefix + "fingerprint"]?.nilIfBlank
+        } else if id == "harness-sync" {
+            fingerprint = values[prefix + "sourceRevision"]?.nilIfBlank
+        } else {
+            fingerprint = nil
+        }
+        let items = kind == .theme
+            ? values[prefix + "items"]?
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .prefix(100)
+                .map(String.init)
+            : nil
+        let evidence: String
+        switch status {
+        case .installed:
+            evidence = "Read-only evidence returned by FleetMesh's fixed SSH probe."
+        case .missing:
+            evidence = "FleetMesh's fixed SSH probe did not find this component."
+        case .unknown:
+            evidence = "FleetMesh's fixed SSH probe could not verify this component."
+        }
         return ComponentObservation(
             id: id,
             name: name,
@@ -255,13 +290,10 @@ struct SSHRemoteInventoryService: RemoteInventoryCapturing {
             sourceDirty: kind == .configuration
                 ? bool(values[prefix + "sourceDirty"])
                 : nil,
-            configurationFingerprint: id == "harness-sync"
-                ? values[prefix + "sourceRevision"]?.nilIfBlank
-                : nil,
+            configurationFingerprint: fingerprint,
+            items: items,
             isRunning: bool(values[prefix + "running"]),
-            evidence: status == .installed
-                ? "Read-only evidence returned by FleetMesh's fixed SSH probe."
-                : "FleetMesh's fixed SSH probe did not find this component."
+            evidence: evidence
         )
     }
 
@@ -330,6 +362,63 @@ git_state() {
     emit "component.$key.sourceDirty" "$dirty"
   fi
 }
+probe_json_theme() {
+  key="$1"
+  directory="$2"
+  if [ ! -d "$directory" ]; then
+    emit "component.$key.status" missing
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    emit "component.$key.status" unknown
+    return 0
+  fi
+  python3 - "$key" "$directory" <<'PY'
+import base64
+import hashlib
+import pathlib
+import sys
+
+key = sys.argv[1]
+root = pathlib.Path(sys.argv[2])
+
+def emit(suffix, value):
+    encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+    print(f"component.{key}.{suffix}\t{encoded}")
+
+try:
+    candidates = []
+    for path in root.rglob("*"):
+        if path.is_symlink() or not path.is_file() or path.suffix.lower() != ".json":
+            continue
+        relative = path.relative_to(root).as_posix()
+        if len(relative) > 160 or any(ord(character) < 32 for character in relative):
+            raise ValueError("unsafe relative path")
+        candidates.append((relative, path))
+    candidates.sort(key=lambda item: item[0])
+    if not candidates:
+        emit("status", "missing")
+    elif len(candidates) > 100:
+        emit("status", "unknown")
+    else:
+        aggregate = bytearray()
+        total_bytes = 0
+        for relative, path in candidates:
+            size = path.stat().st_size
+            total_bytes += size
+            if size > 1_048_576 or total_bytes > 8_388_608:
+                raise ValueError("theme evidence exceeds bounds")
+            data = path.read_bytes()
+            aggregate.extend(relative.encode("utf-8"))
+            aggregate.append(0)
+            aggregate.extend(hashlib.sha256(data).digest())
+        emit("status", "installed")
+        emit("fingerprint", hashlib.sha256(aggregate).hexdigest())
+        emit("items", "\n".join(relative for relative, _ in candidates))
+except Exception:
+    emit("status", "unknown")
+PY
+}
 
 printf 'FLEETMESH_REMOTE_V1\n'
 emit platform linux
@@ -352,7 +441,7 @@ aic="$(find_executable "$HOME/.local/bin/ai-continuum-ctl" /usr/local/bin/ai-con
 if [ -n "$aic" ]; then
   emit component.ai-continuum.status installed
   emit component.ai-continuum.version "$(clean "$($aic --version 2>&1 | head -1 || true)")"
-  if pgrep -x ai-continuum-daemon >/dev/null 2>&1; then
+  if systemctl --user is-active --quiet ai-continuum.service 2>/dev/null || pgrep -x ai-continuum-daemon >/dev/null 2>&1; then
     emit component.ai-continuum.running true
   else
     emit component.ai-continuum.running false
@@ -379,6 +468,21 @@ if [ -n "$harness" ]; then
 else
   emit component.harness-sync.status missing
 fi
+
+kirocrew="$(find_executable "$HOME/.toolbox/bin/kirocrew" "$HOME/.local/bin/kirocrew" /usr/local/bin/kirocrew 2>/dev/null || true)"
+if [ -n "$kirocrew" ]; then
+  emit component.kiro-crew.status installed
+  emit component.kiro-crew.version "$(clean "$($kirocrew --version 2>&1 | head -1 || true)")"
+  if systemctl is-active --quiet kirocrew.service 2>/dev/null || pgrep -x kirocrew >/dev/null 2>&1; then
+    emit component.kiro-crew.running true
+  else
+    emit component.kiro-crew.running false
+  fi
+else
+  emit component.kiro-crew.status missing
+  emit component.kiro-crew.running false
+fi
+probe_json_theme kiro-crew-themes "$HOME/.kiro/crew/themes"
 """#
 }
 
