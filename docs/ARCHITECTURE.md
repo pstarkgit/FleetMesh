@@ -14,18 +14,17 @@ flowchart TB
       Bar[Menu-bar command center] --> Store
       Store --> LocalProbe[Read-only local probes]
       Store --> SSH[Fixed read-only SSH check-in]
-      Store --> LocalState[Local-only state\nfleet pointer + SSH endpoints\nUI visibility preferences]
+      Store --> LocalState[Local-only state\nAWS profile identifiers + SSH endpoints\nUI visibility preferences]
+      Store --> Cache[Private JSON cache\nstale fallback only]
     end
 
-    subgraph Shared[Shared Device Sync folder]
-      Manifest[fleet-manifest.json\nmanifest schema v2]
-      Machines[machines/*.json\nsnapshot schema v1 + additive fields]
+    subgraph Shared[AWS control plane]
+      DDB[DynamoDB\nmanifest record + device records\nGSI1 fleet view]
     end
 
-    LocalProbe --> Machines
-    SSH --> Machines
-    Manifest --> Store
-    Machines --> Store
+    LocalProbe --> Store
+    SSH --> Store
+    Store <--> DDB
     Store --> Doctor[Doctor safety gate]
     Doctor --> Entrypoints[Product-owned local repair entrypoints]
 ```
@@ -34,7 +33,7 @@ flowchart TB
 
 | Concern | Authority |
 |---|---|
-| Desired fleet catalog, versions, enrollment, roles, and scope | `fleet-manifest.json` |
+| Desired fleet catalog, versions, enrollment, roles, and scope | DynamoDB manifest record (`FLEET#<fleet-id>` / `STATE`); JSON is import/export/cache compatibility |
 | What a device actually has | Fresh read-only probes from that device |
 | Product installation and runtime state | The product's own installer/runtime |
 | Latest supported software version | Product-owned update feed/checker, else recorded minimum |
@@ -85,9 +84,10 @@ placement; it never rearranges another app's menu-bar item.
 
 ## Managed product boundaries
 
-FleetMesh owns desired-state JSON, redacted snapshots, drift calculation,
-bootstrap orchestration UI, local-only SSH check-in, and Doctor's hard-coded
-local repair catalog.
+FleetMesh owns the storage-neutral desired-state protocol, DynamoDB control-plane
+adapter, redacted snapshots, private JSON cache/import compatibility, drift
+calculation, bootstrap orchestration UI, local-only SSH check-in, and Doctor's
+hard-coded local repair catalog.
 
 Each managed product owns its own installer, updater, runtime state, and health
 semantics. FleetMesh may invoke those entrypoints only from explicit UI actions;

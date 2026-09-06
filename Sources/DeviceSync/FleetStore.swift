@@ -43,6 +43,7 @@ final class FleetStore {
     private let codexTaskLauncher: any DoctorCodexTaskLaunching
     private let doctorHomeURL: URL
     private let fleetAccess: FleetRepositoryAccess
+    private let dynamoDBClientFactory: DynamoDBFleetClientFactory
 
     init(
         localRepository: LocalStateRepository = LocalStateRepository(),
@@ -54,7 +55,9 @@ final class FleetStore {
         doctorCommandRunner: any DoctorCommandRunning = ProcessDoctorCommandRunner(),
         codexTaskLauncher: any DoctorCodexTaskLaunching = ProcessDoctorCodexTaskLauncher(),
         doctorHomeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
-        fleetAccess: FleetRepositoryAccess = FleetRepositoryAccess()
+        fleetAccess: FleetRepositoryAccess = FleetRepositoryAccess(),
+        dynamoDBClientFactory: @escaping DynamoDBFleetClientFactory =
+            FleetDynamoDBClientFactories.production
     ) {
         self.localRepository = localRepository
         self.inventory = inventory
@@ -66,6 +69,7 @@ final class FleetStore {
         self.codexTaskLauncher = codexTaskLauncher
         self.doctorHomeURL = doctorHomeURL
         self.fleetAccess = fleetAccess
+        self.dynamoDBClientFactory = dynamoDBClientFactory
     }
 
     var fleetRootURL: URL? {
@@ -430,6 +434,38 @@ final class FleetStore {
         }
     }
 
+
+    func updateStorage(
+        backend: FleetStorageBackend,
+        profile: String? = nil,
+        region: String? = nil,
+        table: String? = nil,
+        fleetID: String? = nil,
+        cachePath: String? = nil
+    ) async {
+        guard !isBusy else { return }
+        isUpdatingScope = true
+        lastError = nil
+        lastActionMessage = nil
+        do {
+            localState = try localRepository.updatingStorage(
+                backend: backend,
+                profile: profile,
+                region: region,
+                table: table,
+                fleetID: fleetID,
+                cachePath: cachePath
+            )
+            isUpdatingScope = false
+            await refresh()
+            if lastError == nil {
+                lastActionMessage = "Fleet storage is now \(backend.rawValue)."
+            }
+        } catch {
+            isUpdatingScope = false
+            lastError = error.localizedDescription
+        }
+    }
 
     func setComponentHidden(componentID: String, hidden: Bool) {
         guard !isBusy else { return }
@@ -1121,9 +1157,7 @@ final class FleetStore {
 
     private func reloadFleet() async {
         guard let fleetRootURL, let localSnapshot else { return }
-        let read = await Task.detached(priority: .utility) {
-            FleetRepository(rootURL: fleetRootURL).load()
-        }.value
+        let read = await fleetAccess.load(rootURL: fleetRootURL)
         apply(read: read, currentSnapshot: localSnapshot)
     }
 
@@ -1158,6 +1192,15 @@ final class FleetStore {
     ) async throws -> MachineSnapshot {
         let state = try localRepository.loadOrCreate()
         localState = state
+        let fleetRoot = URL(
+            fileURLWithPath: state.fleetRootPath,
+            isDirectory: true
+        )
+        try await fleetAccess.configure(
+            state: state,
+            rootURL: fleetRoot,
+            makeDynamoDBClient: dynamoDBClientFactory
+        )
         let captured: MachineSnapshot
         if let doctorComponentID {
             captured = await inventory.captureForDoctor(
@@ -1174,29 +1217,24 @@ final class FleetStore {
         let snapshot = captured.removingSoftwareCheckoutEvidence()
         localSnapshot = snapshot
 
-        let fleetRoot = URL(fileURLWithPath: state.fleetRootPath, isDirectory: true)
-        let read = try await Task.detached(priority: .utility) {
-            let repository = FleetRepository(rootURL: fleetRoot)
-            let manifestRead = repository.loadManifest()
-            var result = FleetReadResult(
-                manifest: manifestRead.manifest,
-                machines: [],
-                issues: manifestRead.issue.map { [$0] } ?? []
+        let manifestRead = await fleetAccess.loadManifest(rootURL: fleetRoot)
+        var read = FleetReadResult(
+            manifest: manifestRead.manifest,
+            machines: [],
+            issues: manifestRead.issue.map { [$0] } ?? []
+        )
+        // Missing authority can mean a backend is not ready yet. Inventory
+        // locally, but publish only after an existing manifest is readable.
+        if read.manifest != nil {
+            read = try await fleetAccess.publish(
+                snapshot,
+                rootURL: fleetRoot
             )
-            // Missing authority can mean OneDrive has not downloaded the
-            // manifest yet. Inventory locally, but publish only after an
-            // existing manifest is readable.
-            if result.manifest != nil {
-                _ = try repository.publish(snapshot)
-                result = repository.load()
-            } else if requireManifest {
-                throw manifestRead.issue == nil
-                    ? FleetStoreError.missingManifestForRemoteCheckIn
-                    : FleetStoreError.unreadableManifestForRemoteCheckIn
-            }
-
-            return result
-        }.value
+        } else if requireManifest {
+            throw manifestRead.issue == nil
+                ? FleetStoreError.missingManifestForRemoteCheckIn
+                : FleetStoreError.unreadableManifestForRemoteCheckIn
+        }
 
         apply(read: read, currentSnapshot: snapshot)
         lastRefreshAt = Date()
@@ -1204,6 +1242,10 @@ final class FleetStore {
     }
 
     private func refreshDetectedExistingFleet() async {
+        guard localState?.effectiveStorageBackend == .json else {
+            detectedExistingFleetURL = nil
+            return
+        }
         let canonical = LocalStateRepository.canonicalSharedFleetURL(
             homeURL: localRepository.homeURL
         )

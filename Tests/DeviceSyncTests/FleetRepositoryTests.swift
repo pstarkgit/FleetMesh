@@ -4,17 +4,81 @@ import Testing
 
 struct FleetRepositoryTests {
     @Test
+    func jsonBackendPreservesRepositoryContract() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = repositoryFixtureSnapshot()
+        let backend: any FleetRepositoryProtocol = JSONFleetRepositoryBackend(
+            rootURL: root
+        )
+        let first = FleetManifest(snapshot: snapshot)
+
+        let created = try await backend.replaceBaseline(first, snapshot: snapshot)
+        #expect(backend.sourceDescription == "Shared JSON folder")
+        #expect(created.manifest?.revision == first.revision)
+        #expect(created.machines.map(\.machineID) == [snapshot.machineID])
+
+        let second = try first.settingManaged(
+            componentID: "codex-themes",
+            managed: false,
+            observation: snapshot.component("codex-themes"),
+            updatedByMachineID: snapshot.machineID
+        )
+        let saved = try await backend.save(
+            second,
+            replacingRevision: first.revision
+        )
+        #expect(saved.manifest?.revision == second.revision)
+
+        await #expect(throws: FleetRepositoryError.self) {
+            _ = try await backend.save(
+                first,
+                replacingRevision: first.revision
+            )
+        }
+        #expect((await backend.loadManifest()).manifest?.revision == second.revision)
+    }
+
+    @Test
+    func repositoryAccessUsesInjectedBackend() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = repositoryFixtureSnapshot()
+        let manifest = FleetManifest(snapshot: snapshot)
+        let backend = RecordingFleetRepositoryBackend(
+            read: FleetReadResult(
+                manifest: manifest,
+                machines: [snapshot],
+                issues: []
+            )
+        )
+        let access = FleetRepositoryAccess { _ in backend }
+
+        let loaded = await access.load(rootURL: root)
+        _ = try await access.publish(snapshot, rootURL: root)
+
+        #expect(loaded.manifest?.revision == manifest.revision)
+        #expect(await backend.recordedOperations() == ["load", "publish"])
+    }
+
+    @Test
     func processRunnerDrainsOutputWhileChildIsRunning() async throws {
+        let producer = """
+        import os
+        chunk = b"x" * 65_536
+        for _ in range(64):
+            os.write(1, chunk)
+        """
         let result = await ProcessCommandRunner().run(
-            executable: URL(fileURLWithPath: "/usr/bin/yes"),
-            arguments: [String(repeating: "x", count: 256)],
+            executable: URL(fileURLWithPath: "/usr/bin/python3"),
+            arguments: ["-c", producer],
             environment: nil,
-            timeout: 0.2
+            timeout: 2
         )
 
-        #expect(result.timedOut)
-        #expect(result.standardOutput.utf8.count > 16_384)
-        #expect(result.standardOutput.utf8.count <= 1_048_576)
+        #expect(result.exitCode == 0)
+        #expect(!result.timedOut)
+        #expect(result.standardOutput.utf8.count == ProcessCommandRunner.maximumCapturedBytes)
     }
 
     @Test
@@ -29,6 +93,61 @@ struct FleetRepositoryTests {
         #expect(result.exitCode == -1)
         #expect(!result.timedOut)
         #expect(!result.standardError.isEmpty)
+    }
+
+    @Test
+    func processRunnerPreservesOrdinaryOutputAndExitStatus() async {
+        let result = await ProcessCommandRunner().run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf output; printf error >&2; exit 7"],
+            environment: nil,
+            timeout: 2
+        )
+
+        #expect(result.exitCode == 7)
+        #expect(result.standardOutput == "output")
+        #expect(result.standardError == "error")
+        #expect(!result.timedOut)
+    }
+
+    @Test
+    func processRunnerTimesOutAndReapsUncooperativeChild() async {
+        let producer = """
+        import signal
+        import time
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        print("ready", flush=True)
+        time.sleep(30)
+        """
+        let result = await ProcessCommandRunner().run(
+            executable: URL(fileURLWithPath: "/usr/bin/python3"),
+            arguments: ["-c", producer],
+            environment: nil,
+            timeout: 0.5
+        )
+
+        #expect(result.exitCode != 0)
+        #expect(result.standardOutput == "ready\n")
+        #expect(result.timedOut)
+    }
+
+    @Test
+    func processRunnerCancellationTerminatesChild() async throws {
+        let command = Task {
+            await ProcessCommandRunner().run(
+                executable: URL(fileURLWithPath: "/usr/bin/python3"),
+                arguments: ["-c", "import time; time.sleep(30)"],
+                environment: nil,
+                timeout: 30
+            )
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        command.cancel()
+        let result = await command.value
+
+        #expect(result.exitCode != 0)
+        #expect(result.standardError == "Command cancelled.")
+        #expect(!result.timedOut)
     }
 
     @Test
@@ -538,6 +657,61 @@ struct FleetRepositoryTests {
         )
         #expect(restored.hiddenComponents.isEmpty)
         #expect(try repository.loadOrCreate().hiddenComponents.isEmpty)
+    }
+}
+
+private actor RecordingFleetRepositoryBackend: FleetRepositoryProtocol {
+    nonisolated let sourceDescription = "Recording backend"
+
+    private let read: FleetReadResult
+    private var operations: [String] = []
+
+    init(read: FleetReadResult) {
+        self.read = read
+    }
+
+    func load() async -> FleetReadResult {
+        operations.append("load")
+        return read
+    }
+
+    func loadManifest() async -> FleetManifestReadResult {
+        operations.append("loadManifest")
+        return FleetManifestReadResult(manifest: read.manifest, issue: nil)
+    }
+
+    func replaceBaseline(
+        _ manifest: FleetManifest,
+        snapshot: MachineSnapshot
+    ) async throws -> FleetReadResult {
+        operations.append("replaceBaseline")
+        return read
+    }
+
+    func publish(_ snapshot: MachineSnapshot) async throws -> FleetReadResult {
+        operations.append("publish")
+        return read
+    }
+
+    func publishAndSave(
+        _ snapshot: MachineSnapshot,
+        manifest: FleetManifest,
+        replacingRevision: String
+    ) async throws -> FleetReadResult {
+        operations.append("publishAndSave")
+        return read
+    }
+
+    func save(
+        _ manifest: FleetManifest,
+        replacingRevision: String
+    ) async throws -> FleetReadResult {
+        operations.append("save")
+        return read
+    }
+
+    func recordedOperations() -> [String] {
+        operations
     }
 }
 

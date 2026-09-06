@@ -7,9 +7,18 @@ let package = Package(
     products: [
         .executable(name: "DeviceSync", targets: ["DeviceSync"]),
     ],
+    dependencies: [
+        .package(
+            url: "https://github.com/awslabs/aws-sdk-swift.git",
+            exact: "1.7.78"
+        ),
+    ],
     targets: [
         .executableTarget(
             name: "DeviceSync",
+            dependencies: [
+                .product(name: "AWSDynamoDB", package: "aws-sdk-swift"),
+            ],
             path: "Sources/DeviceSync"
         ),
         .testTarget(

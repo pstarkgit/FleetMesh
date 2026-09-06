@@ -8,6 +8,29 @@ struct FleetMeshIdentityTests {
         #expect(HeadlessOperation(arguments: ["DeviceSync", "--check"]) == .check)
     }
     @Test
+    func dynamoDBMigrationArgumentsAreExplicitAndNonSecret() {
+        let arguments = [
+            "DeviceSync", "--migrate-dynamodb", "fleetmesh-auto",
+            "us-west-2", "fleetmesh-control-plane", "primary",
+        ]
+        #expect(HeadlessOperation(arguments: arguments) == .migrateDynamoDB(
+            mode: .shadow,
+            profile: "fleetmesh-auto",
+            region: "us-west-2",
+            table: "fleetmesh-control-plane",
+            fleetID: "primary"
+        ))
+        #expect(HeadlessOperation(arguments: arguments + ["--cutover"]) == .migrateDynamoDB(
+            mode: .cutover,
+            profile: "fleetmesh-auto",
+            region: "us-west-2",
+            table: "fleetmesh-control-plane",
+            fleetID: "primary"
+        ))
+        #expect(HeadlessOperation(arguments: ["DeviceSync", "--migrate-dynamodb"]) == nil)
+    }
+
+    @Test
     func headlessScopeCommandsRequireExplicitComponentIDs() {
         #expect(
             HeadlessOperation(arguments: ["DeviceSync", "--remove-from-scope", "codex-voice"])

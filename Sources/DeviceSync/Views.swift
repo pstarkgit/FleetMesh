@@ -948,27 +948,42 @@ struct FleetView: View {
 
             VStack(alignment: .trailing, spacing: 10) {
                 if store.needsFleetConnection {
-                    if store.detectedExistingFleetURL != nil {
+                    if store.localState?.effectiveStorageBackend == .json {
+                        if store.detectedExistingFleetURL != nil {
+                            Button {
+                                Task { await store.connectDetectedFleet() }
+                            } label: {
+                                Label("Connect detected fleet", systemImage: "link.badge.plus")
+                                    .frame(minWidth: 180)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
                         Button {
-                            Task { await store.connectDetectedFleet() }
+                            Task { await store.chooseExistingFleetFolder() }
                         } label: {
-                            Label("Connect detected fleet", systemImage: "link.badge.plus")
+                            Label("Choose existing fleet…", systemImage: "folder")
+                                .frame(minWidth: 180)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Create a new fleet instead…") { onOpenSettings() }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .foregroundStyle(DSTheme.inkMuted)
+                    } else {
+                        Button {
+                            Task { await store.refresh() }
+                        } label: {
+                            Label("Refresh cloud authority", systemImage: "arrow.clockwise")
                                 .frame(minWidth: 180)
                         }
                         .buttonStyle(.borderedProminent)
-                    }
-                    Button {
-                        Task { await store.chooseExistingFleetFolder() }
-                    } label: {
-                        Label("Choose existing fleet…", systemImage: "folder")
-                            .frame(minWidth: 180)
-                    }
-                    .buttonStyle(.bordered)
 
-                    Button("Create a new fleet instead…") { onOpenSettings() }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(DSTheme.inkMuted)
+                        Button("Review storage settings") { onOpenSettings() }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .foregroundStyle(DSTheme.inkMuted)
+                    }
                 } else {
                     Picker("Device role", selection: $joinRole) {
                         ForEach(DeviceRole.allCases, id: \.self) { role in
@@ -1000,7 +1015,10 @@ struct FleetView: View {
 
     private var joinCardDetail: String {
         if store.needsFleetConnection {
-            return "Wait for OneDrive to finish syncing, then connect the folder that already contains fleet-manifest.json. A new Mac never creates or replaces fleet authority during a scan."
+            if store.localState?.effectiveStorageBackend == .json {
+                return "Wait for OneDrive to finish syncing, then connect the folder that already contains fleet-manifest.json. A new Mac never creates or replaces fleet authority during a scan."
+            }
+            return "DynamoDB authority is configured locally but no readable fleet manifest is available. Refresh after restoring least-privilege AWS access; FleetMesh will not create or replace cloud authority during a scan."
         }
         let targetCount = store.manifest?.activeTargets.count ?? 0
         let deviceCount = store.enrolledDevices.count
@@ -2352,27 +2370,57 @@ struct SettingsView: View {
                 .deviceCard()
 
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionTitle(title: "Fleet authority", subtitle: "Shared atomic JSON — never runtime databases or secrets")
-                    Text(store.fleetRootURL?.path ?? "Not configured")
-                        .font(.system(size: 12, design: .monospaced))
-                        .textSelection(.enabled)
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(DSTheme.canvas)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    HStack {
-                        Button("Choose folder…") { Task { await store.chooseFleetFolder() } }
+                    SectionTitle(
+                        title: "Fleet authority",
+                        subtitle: "Local JSON, verified shadow comparison, or DynamoDB control plane"
+                    )
+                    if store.localState?.effectiveStorageBackend == .json {
+                        Text(store.fleetRootURL?.path ?? "Not configured")
+                            .font(.system(size: 12, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(DSTheme.canvas)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        HStack {
+                            Button("Choose folder…") { Task { await store.chooseFleetFolder() } }
+                                .disabled(store.isBusy)
+                            Button("Reveal in Finder") { store.revealFleetFolder() }
+                                .disabled(store.fleetRootURL == nil || store.isBusy)
+                        }
+                        VStack(alignment: .leading, spacing: 7) {
+                            Label("fleet-manifest.json — in-scope products and desired state", systemImage: "scope")
+                            Label("machines/<machine-id>.json — observed evidence from each device", systemImage: "laptopcomputer.and.arrow.down")
+                            Label("local-state.json — this Mac's anonymous ID and fleet pointer", systemImage: "internaldrive")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkSoft)
+                    } else {
+                        let backend = store.localState?.effectiveStorageBackend ?? .json
+                        let table = store.localState?.dynamoDBTable ?? "Unconfigured table"
+                        let region = store.localState?.awsRegion ?? "Unconfigured Region"
+                        let fleetID = store.localState?.fleetID ?? "Unconfigured fleet"
+                        Text("\(table) · \(region) · fleet \(fleetID)")
+                            .font(.system(size: 12, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(DSTheme.canvas)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        VStack(alignment: .leading, spacing: 7) {
+                            if backend == .shadow {
+                                Label("JSON remains authoritative; DynamoDB is compared read-only", systemImage: "rectangle.on.rectangle")
+                            } else {
+                                Label("DynamoDB is authoritative; a private JSON cache provides visible stale fallback", systemImage: "cloud")
+                            }
+                            Label("AWS credentials come from the selected local profile and never enter fleet data", systemImage: "key")
+                            Label("SSH endpoints and controller settings remain only in local-state.json", systemImage: "lock.shield")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(DSTheme.inkSoft)
+                        Button("Refresh authority") { Task { await store.refresh() } }
                             .disabled(store.isBusy)
-                        Button("Reveal in Finder") { store.revealFleetFolder() }
-                            .disabled(store.fleetRootURL == nil || store.isBusy)
                     }
-                    VStack(alignment: .leading, spacing: 7) {
-                        Label("fleet-manifest.json — in-scope products and desired state", systemImage: "scope")
-                        Label("machines/<machine-id>.json — observed evidence from each device", systemImage: "laptopcomputer.and.arrow.down")
-                        Label("local-state.json — this Mac's anonymous ID and fleet pointer", systemImage: "internaldrive")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(DSTheme.inkSoft)
                 }
                 .deviceCard()
 
@@ -2392,7 +2440,9 @@ struct SettingsView: View {
                         }
                         .disabled(store.localSnapshot == nil || store.isBusy)
                     }
-                    Text("New Macs must connect the shared fleet folder before their first scan. Linux devices check in over a local-only SSH connection. Do not replace the baseline unless you intend to change fleet-wide defaults.")
+                    Text(store.localState?.effectiveStorageBackend == .json
+                        ? "New Macs must connect the shared fleet folder before their first scan. Linux devices check in over a local-only SSH connection. Do not replace the baseline unless you intend to change fleet-wide defaults."
+                        : "New Macs must have the same local DynamoDB identifiers and least-privilege AWS access before their first scan. Linux devices still check in through a controller's local-only SSH connection. Do not replace the baseline unless you intend to change fleet-wide defaults.")
                         .font(.caption)
                         .foregroundStyle(DSTheme.inkSoft)
                 }

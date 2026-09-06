@@ -1,3 +1,22 @@
+## 0.1.14 — 2026-09-06
+
+- Migrated shared fleet authority from OneDrive JSON to a protected DynamoDB
+  control plane with conditional policy writes, monotonic device reports,
+  exact shadow comparison, and a private visibly stale JSON cache fallback.
+- Added local-only AWS profile, Region, table, fleet ID, and backend selection;
+  runtime access now assumes dedicated least-privilege reader, reporter, or
+  controller roles while credentials and controller settings remain local.
+- Routed GUI scans, policy changes, error recovery, and every headless operation
+  through the selected JSON, shadow, or DynamoDB backend, including guarded
+  import and cutover that persist authority only after an exact match.
+- Tightened shared payload redaction so software checkout details plus
+  configuration branch and dirty-worktree state never enter DynamoDB, while
+  stable configuration hashes remain available for fleet comparison.
+- Replaced unbounded command-output temp files with continuously drained 1 MiB
+  in-memory captures, cancellation propagation, timeout termination, and
+  SIGKILL fallback. Added finite high-volume, output, launch-failure,
+  cancellation, and process-reaping regressions.
+
 ## 0.1.13 — 2026-09-05
 
 - Corrected full Harness Sync to Mac-only product applicability. Its own product

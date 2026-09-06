@@ -315,38 +315,66 @@ struct FleetRepository: Sendable {
     }
 }
 
-/// Serializes cloud-backed fleet-folder I/O away from the main actor. Callers
-/// compute policy changes in memory, then submit one bounded repository
-/// transaction and apply the returned read model on the UI actor.
+typealias FleetRepositoryBackendFactory =
+    @Sendable (URL) -> any FleetRepositoryProtocol
+
+/// Serializes shared fleet I/O away from the main actor. The backend factory
+/// keeps current JSON behavior while allowing DynamoDB and cache-backed
+/// implementations to enter behind the same contract.
 actor FleetRepositoryAccess {
-    func load(rootURL: URL) -> FleetReadResult {
-        FleetRepository(rootURL: rootURL).load()
+    private let makeBackend: FleetRepositoryBackendFactory
+    private var configuredBackends: [String: any FleetRepositoryProtocol] = [:]
+
+    init(
+        makeBackend: @escaping FleetRepositoryBackendFactory = {
+            JSONFleetRepositoryBackend(rootURL: $0)
+        }
+    ) {
+        self.makeBackend = makeBackend
     }
 
-    func loadManifest(rootURL: URL) -> FleetManifestReadResult {
-        FleetRepository(rootURL: rootURL).loadManifest()
+    func configure(
+        state: LocalDeviceState,
+        rootURL: URL,
+        makeDynamoDBClient: DynamoDBFleetClientFactory
+    ) async throws {
+        configuredBackends[rootURL.standardizedFileURL.path] = try await
+            FleetRepositoryBackendBuilder.make(
+                state: state,
+                rootURL: rootURL,
+                makeDynamoDBClient: makeDynamoDBClient
+            )
+    }
+
+    private func backend(for rootURL: URL) -> any FleetRepositoryProtocol {
+        configuredBackends[rootURL.standardizedFileURL.path]
+            ?? makeBackend(rootURL)
+    }
+
+    func load(rootURL: URL) async -> FleetReadResult {
+        await backend(for: rootURL).load()
+    }
+
+    func loadManifest(rootURL: URL) async -> FleetManifestReadResult {
+        await backend(for: rootURL).loadManifest()
     }
 
     func replaceBaseline(
         _ manifest: FleetManifest,
         snapshot: MachineSnapshot,
         rootURL: URL
-    ) throws -> FleetReadResult {
-        let repository = FleetRepository(rootURL: rootURL)
-        _ = try repository.publish(snapshot)
-        // Desired-state authority is the commit point. If evidence publication
-        // fails, the existing baseline remains byte-for-byte unchanged.
-        try repository.saveManifest(manifest)
-        return repository.load()
+    ) async throws -> FleetReadResult {
+        try await backend(for: rootURL).replaceBaseline(
+            manifest,
+            snapshot: snapshot
+        )
     }
 
     func publish(
         _ snapshot: MachineSnapshot,
         rootURL: URL
-    ) throws -> FleetReadResult {
-        let repository = FleetRepository(rootURL: rootURL)
-        _ = try repository.publish(snapshot)
-        return repository.load()
+    ) async throws -> FleetReadResult {
+        try await backend(for: rootURL).publish(snapshot)
     }
 
     func publishAndSave(
@@ -354,21 +382,23 @@ actor FleetRepositoryAccess {
         manifest: FleetManifest,
         replacingRevision: String,
         rootURL: URL
-    ) throws -> FleetReadResult {
-        let repository = FleetRepository(rootURL: rootURL)
-        _ = try repository.publish(snapshot)
-        try repository.saveManifest(manifest, replacingRevision: replacingRevision)
-        return repository.load()
+    ) async throws -> FleetReadResult {
+        try await backend(for: rootURL).publishAndSave(
+            snapshot,
+            manifest: manifest,
+            replacingRevision: replacingRevision
+        )
     }
 
     func save(
         _ manifest: FleetManifest,
         replacingRevision: String,
         rootURL: URL
-    ) throws -> FleetReadResult {
-        let repository = FleetRepository(rootURL: rootURL)
-        try repository.saveManifest(manifest, replacingRevision: replacingRevision)
-        return repository.load()
+    ) async throws -> FleetReadResult {
+        try await backend(for: rootURL).save(
+            manifest,
+            replacingRevision: replacingRevision
+        )
     }
 
     /// Revalidates authority and publishes before the local fleet pointer is

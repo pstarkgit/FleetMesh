@@ -227,7 +227,26 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
     }
 
     func removingSoftwareCheckoutEvidence() -> ComponentObservation {
-        guard kind != .configuration && kind != .theme else { return self }
+        if kind == .configuration || kind == .theme {
+            return ComponentObservation(
+                id: id,
+                name: name,
+                kind: kind,
+                status: status,
+                installedVersion: installedVersion,
+                build: build,
+                installedRevision: installedRevision,
+                productVersionCheck: productVersionCheck,
+                sourceVersion: sourceVersion,
+                sourceRevision: sourceRevision,
+                sourceTree: sourceTree,
+                installedTree: installedTree,
+                configurationFingerprint: configurationFingerprint,
+                items: items,
+                isRunning: isRunning,
+                evidence: evidence
+            )
+        }
         return ComponentObservation(
             id: id,
             name: name,

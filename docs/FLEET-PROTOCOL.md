@@ -2,26 +2,27 @@
 
 ## Verdict
 
-FleetMesh stores a small JSON control plane in the legacy `Device Sync` fleet
-folder. Manifest schema v2 is desired state. Machine snapshot schema v1 remains
-the evidence format, with additive platform/capability fields that older readers
-can ignore.
+FleetMesh stores its active control plane in DynamoDB. Manifest schema v2
+remains desired state, and machine snapshot schema v1 remains redacted evidence.
+The legacy `Device Sync` JSON representation is retained for guarded import,
+explicit export, rollback evidence, and private stale-cache fallback; it is not
+cloud authority after cutover.
 
 ```text
-Device Sync/
-├── fleet-manifest.json
-└── machines/
-    ├── <random-machine-id>.json
-    └── ...
+FLEET#<fleet-id>  / STATE  — desired-state manifest
+DEVICE#<uuid>     / STATE  — redacted device evidence
+GSI1: FLEET#<fleet-id>     — complete fleet view
 ```
 
-All writes use atomic replacement. Readers validate schema versions, decode each
-machine independently, tolerate older writers, surface malformed files as
-issues, and never treat partial cloud availability as a healthy empty fleet.
+Manifest writes use revision conditions, device writes are monotonic, and each
+record is decoded independently. Partial corruption is surfaced as an issue and
+never treated as a healthy empty fleet.
 
 ## Manifest schema v2
 
-`fleet-manifest.json` is the desired-state authority. It contains:
+The logical manifest record (`FLEET#<fleet-id>` / `STATE` in DynamoDB,
+`fleet-manifest.json` in the compatibility representation) is desired-state
+authority. It contains:
 
 - `schemaVersion: 2`
 - `revision`, `updatedAt`, and `updatedByMachineID`
@@ -53,7 +54,9 @@ revision before replacing the file. A stale writer fails closed and reloads.
 
 ## Snapshot schema v1 with additive device fields
 
-Each device owns exactly one `machines/<random-machine-id>.json` snapshot. The
+Each device owns exactly one current logical snapshot, stored as
+`DEVICE#<random-machine-id>` / `STATE` in DynamoDB and as
+`machines/<random-machine-id>.json` in the compatibility representation. The
 stable ID is a random UUID stored in local Application Support; it is not
 derived from serial number, hardware UUID, account, hostname, or SSH endpoint.
 
@@ -80,9 +83,9 @@ scope, update desired versions, or repair anything.
 ## Local-only SSH endpoints
 
 FleetMesh can add a Linux device by SSH from a controller Mac. The destination
-host or SSH config alias is controller-private state stored only in the legacy
-local Application Support file. It is not synced and is never written to
-`fleet-manifest.json` or `machines/*.json`.
+host or SSH config alias is controller-private state stored only in the local
+Application Support file. It is not synced and is never written to the manifest
+or any shared DynamoDB/JSON device payload.
 
 The SSH probe uses `/usr/bin/ssh`, existing SSH config/agent trust, strict
 destination validation, an 18-second bound, and a fixed read-only script. The
@@ -94,7 +97,7 @@ commands, and FleetMesh never repairs a remote machine over SSH.
 
 ## Redaction rules
 
-Allowed in shared JSON:
+Allowed in shared fleet payloads:
 
 - random machine IDs
 - redacted display names and safe local host labels
@@ -103,7 +106,7 @@ Allowed in shared JSON:
   results, status, and fingerprints
 - theme filenames plus aggregate SHA-256 fingerprints
 
-Forbidden in shared JSON:
+Forbidden in shared fleet payloads:
 
 - serial number, platform UUID, provisioning UDID, MAC address
 - username, account name, absolute home path, or absolute source path
@@ -114,7 +117,7 @@ Forbidden in shared JSON:
 - developer source branch, source revision, worktree dirtiness, or Git tree hashes
 
 Software checkout evidence is Doctor-local only. Routine local and remote scans
-do not read software worktrees, and `machines/*.json` writers strip those legacy
+do not read software worktrees, and all shared device writers strip those legacy
 fields before publication. Configuration products may still publish their own
 bounded fingerprint/revision when that checkout or linked tree is the configured
 artifact itself.

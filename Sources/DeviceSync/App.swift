@@ -52,38 +52,70 @@ struct DeviceSyncApp: App {
                     print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current): SELF-CHECK OK")
                     return
                 }
+                if case .migrateDynamoDB(
+                    let mode,
+                    let profile,
+                    let region,
+                    let table,
+                    let fleetID
+                ) = operation {
+                    let result = try await FleetDynamoDBMigrationCommand.run(
+                        mode: mode,
+                        profile: profile,
+                        region: region,
+                        table: table,
+                        fleetID: fleetID
+                    )
+                    print("migration: \(result.backend.rawValue)")
+                    print("manifest: \(result.migration.manifestRevision)")
+                    print("devices: \(result.migration.importedDeviceCount)")
+                    print("shadow-match: \(result.migration.comparison.isMatch)")
+                    return
+                }
                 let localRepository = LocalStateRepository()
                 let state = try localRepository.loadOrCreate()
                 let snapshot = await InventoryService().capture(
                     machineID: state.machineID,
                     displayName: state.displayName
                 )
-                let repository = FleetRepository(
-                    rootURL: URL(fileURLWithPath: state.fleetRootPath, isDirectory: true)
+                let rootURL = URL(
+                    fileURLWithPath: state.fleetRootPath,
+                    isDirectory: true
                 )
-                let existing = repository.load()
-                let url: URL?
+                let fleetAccess = FleetRepositoryAccess()
+                try await fleetAccess.configure(
+                    state: state,
+                    rootURL: rootURL,
+                    makeDynamoDBClient: FleetDynamoDBClientFactories.production
+                )
+                let existing = await fleetAccess.load(rootURL: rootURL)
+                let read: FleetReadResult
                 switch operation {
                 case .adoptBaseline:
-                    url = try repository.publish(snapshot)
-                    try repository.saveManifest(FleetManifest(snapshot: snapshot))
+                    read = try await fleetAccess.replaceBaseline(
+                        FleetManifest(snapshot: snapshot),
+                        snapshot: snapshot,
+                        rootURL: rootURL
+                    )
                 case .check:
                     if existing.manifest == nil {
-                        url = nil
+                        read = existing
                     } else {
-                        url = try repository.publish(snapshot)
+                        read = try await fleetAccess.publish(
+                            snapshot,
+                            rootURL: rootURL
+                        )
                     }
-                case .snapshot, .setManaged:
+                case .snapshot:
                     guard existing.manifest != nil else {
                         throw HeadlessOperationError.missingManifest
                     }
-                    url = try repository.publish(snapshot)
-                case .selfCheck:
-                    fatalError("self-check returns before inventory")
-                }
-                var read = url == nil ? existing : repository.load()
-                if case .setManaged(let componentID, let managed) = operation {
-                    guard let manifest = read.manifest else {
+                    read = try await fleetAccess.publish(
+                        snapshot,
+                        rootURL: rootURL
+                    )
+                case .setManaged(let componentID, let managed):
+                    guard let manifest = existing.manifest else {
                         throw HeadlessOperationError.missingManifest
                     }
                     let updated = try manifest.settingManaged(
@@ -92,11 +124,20 @@ struct DeviceSyncApp: App {
                         observation: snapshot.component(componentID),
                         updatedByMachineID: state.machineID
                     )
-                    try repository.saveManifest(
-                        updated,
-                        replacingRevision: manifest.revision
+                    read = try await fleetAccess.publishAndSave(
+                        snapshot,
+                        manifest: updated,
+                        replacingRevision: manifest.revision,
+                        rootURL: rootURL
                     )
-                    read = repository.load()
+                case .selfCheck, .migrateDynamoDB:
+                    fatalError("early-return operation reached inventory")
+                }
+                let authorityDescription: String
+                if state.effectiveStorageBackend == .json {
+                    authorityDescription = rootURL.path
+                } else {
+                    authorityDescription = state.effectiveStorageBackend.rawValue
                 }
                 let productVersionTargets = read.manifest.map {
                     ProductVersionTargetResolver().resolve(
@@ -131,25 +172,25 @@ struct DeviceSyncApp: App {
                 )
                 switch operation {
                 case .snapshot:
-                    print("snapshot: \(url?.path ?? "not published")")
+                    print("snapshot: \(authorityDescription)")
                 case .adoptBaseline:
-                    print("baseline: \(repository.manifestURL.path)")
+                    print("baseline: \(authorityDescription)")
                     print("targets: \(read.manifest?.activeTargets.count ?? 0)")
                 case .setManaged(let componentID, let managed):
                     print("scope: \(componentID) \(managed ? "managed" : "unmanaged")")
-                    print("baseline: \(repository.manifestURL.path)")
+                    print("baseline: \(authorityDescription)")
                     print("targets: \(read.manifest?.activeTargets.count ?? 0)")
-                    print("snapshot: \(url?.path ?? "not published")")
+                    print("snapshot: \(authorityDescription)")
                 case .check:
                     print("\(FleetMeshIdentity.productName) \(DeviceSyncVersion.current): \(fleetVerdict.label)")
                     print("machine: \(snapshot.name) (\(snapshot.hostName))")
-                    print("fleet folder: \(repository.rootURL.path)")
+                    print("fleet authority: \(authorityDescription)")
                     print("components: \(snapshot.components.filter { $0.status == .installed }.count) installed, \(snapshot.components.filter { $0.status == .missing }.count) missing")
                     print("fleet: \(read.machines.count) report(s), \(assessment.attentionCount) attention item(s), \(read.issues.count) read issue(s)")
                     if fleetVerdict.headlessExitCode != 0 {
                         exit(fleetVerdict.headlessExitCode)
                     }
-                case .selfCheck:
+                case .selfCheck, .migrateDynamoDB:
                     break
                 }
             } catch {
@@ -168,10 +209,26 @@ enum HeadlessOperation: Equatable {
     case snapshot
     case adoptBaseline
     case setManaged(componentID: String, managed: Bool)
+    case migrateDynamoDB(
+        mode: FleetDynamoDBMigrationMode,
+        profile: String,
+        region: String,
+        table: String,
+        fleetID: String
+    )
 
     init?(arguments: [String]) {
         if arguments.contains("--self-check") {
             self = .selfCheck
+        } else if let index = arguments.firstIndex(of: "--migrate-dynamodb"),
+                  arguments.indices.contains(index + 4) {
+            self = .migrateDynamoDB(
+                mode: arguments.contains("--cutover") ? .cutover : .shadow,
+                profile: arguments[index + 1],
+                region: arguments[index + 2],
+                table: arguments[index + 3],
+                fleetID: arguments[index + 4]
+            )
         } else if arguments.contains("--check") {
             self = .check
         } else if arguments.contains("--snapshot") {

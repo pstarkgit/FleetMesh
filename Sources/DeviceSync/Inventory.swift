@@ -34,114 +34,181 @@ extension CommandRunning {
 }
 
 struct ProcessCommandRunner: CommandRunning {
+    static let maximumCapturedBytes = 1_048_576
+
     func run(
         executable: URL,
         arguments: [String],
         environment: [String: String]? = nil,
         timeout: TimeInterval? = nil
     ) async -> CommandResult {
-        await Task.detached(priority: .utility) {
-            let captureRoot = FileManager.default.temporaryDirectory
-                .appendingPathComponent("fleetmesh-command-\(UUID().uuidString)", isDirectory: true)
-            let outputURL = captureRoot.appendingPathComponent("stdout")
-            let errorURL = captureRoot.appendingPathComponent("stderr")
-            do {
-                try FileManager.default.createDirectory(
-                    at: captureRoot,
-                    withIntermediateDirectories: true,
-                    attributes: [.posixPermissions: 0o700]
-                )
-                _ = FileManager.default.createFile(
-                    atPath: outputURL.path,
-                    contents: nil,
-                    attributes: [.posixPermissions: 0o600]
-                )
-                _ = FileManager.default.createFile(
-                    atPath: errorURL.path,
-                    contents: nil,
-                    attributes: [.posixPermissions: 0o600]
-                )
-            } catch {
-                return CommandResult(
-                    exitCode: -1,
-                    standardOutput: "",
-                    standardError: error.localizedDescription,
-                    timedOut: false
-                )
-            }
-            defer { try? FileManager.default.removeItem(at: captureRoot) }
+        let worker = Task.detached(priority: .utility) {
+            Self.cleanupStaleCaptureDirectories()
 
+            let output = BoundedPipeCapture(limit: Self.maximumCapturedBytes)
+            let standardErrorCapture = BoundedPipeCapture(limit: Self.maximumCapturedBytes)
             let process = Process()
             process.executableURL = executable
             process.arguments = arguments
+            process.standardOutput = output.pipe
+            process.standardError = standardErrorCapture.pipe
             if let environment {
                 process.environment = ProcessInfo.processInfo.environment.merging(environment) {
                     _, override in override
                 }
             }
 
+            output.start()
+            standardErrorCapture.start()
             do {
-                let outputHandle = try FileHandle(forWritingTo: outputURL)
-                let errorHandle = try FileHandle(forWritingTo: errorURL)
-                defer {
-                    try? outputHandle.close()
-                    try? errorHandle.close()
-                }
-                process.standardOutput = outputHandle
-                process.standardError = errorHandle
                 try process.run()
+                output.closeParentWriter()
+                standardErrorCapture.closeParentWriter()
+
                 var timedOut = false
                 let deadline = Date().addingTimeInterval(timeout ?? 5)
-                while process.isRunning && Date() < deadline {
-                    try? await Task.sleep(for: .milliseconds(50))
+                while process.isRunning, Date() < deadline, !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(20))
                 }
                 if process.isRunning {
-                    timedOut = true
+                    timedOut = !Task.isCancelled
                     process.terminate()
                     let terminationDeadline = Date().addingTimeInterval(1)
-                    while process.isRunning && Date() < terminationDeadline {
-                        try? await Task.sleep(for: .milliseconds(50))
+                    while process.isRunning, Date() < terminationDeadline {
+                        try? await Task.sleep(for: .milliseconds(20))
                     }
                     if process.isRunning {
                         Darwin.kill(process.processIdentifier, SIGKILL)
-                        let killDeadline = Date().addingTimeInterval(1)
-                        while process.isRunning && Date() < killDeadline {
-                            try? await Task.sleep(for: .milliseconds(50))
-                        }
                     }
                 }
-                try? outputHandle.close()
-                try? errorHandle.close()
+                if process.isRunning {
+                    let killDeadline = Date().addingTimeInterval(1)
+                    while process.isRunning, Date() < killDeadline {
+                        try? await Task.sleep(for: .milliseconds(20))
+                    }
+                }
+                if !process.isRunning {
+                    process.waitUntilExit()
+                }
+                output.finish()
+                standardErrorCapture.finish()
                 return CommandResult(
                     exitCode: process.isRunning ? -1 : process.terminationStatus,
-                    standardOutput: String(
-                        data: Self.readPrefix(outputURL, maximumBytes: 1_048_576),
-                        encoding: .utf8
-                    ) ?? "",
-                    standardError: String(
-                        data: Self.readPrefix(errorURL, maximumBytes: 1_048_576),
-                        encoding: .utf8
-                    ) ?? "",
+                    standardOutput: output.stringValue,
+                    standardError: Task.isCancelled
+                        ? "Command cancelled."
+                        : standardErrorCapture.stringValue,
                     timedOut: timedOut
                 )
-            } catch {
+            } catch let launchError {
+                if process.isRunning {
+                    process.terminate()
+                    Darwin.kill(process.processIdentifier, SIGKILL)
+                }
+                output.closeParentWriter()
+                standardErrorCapture.closeParentWriter()
+                output.finish()
+                standardErrorCapture.finish()
                 return CommandResult(
                     exitCode: -1,
-                    standardOutput: "",
-                    standardError: error.localizedDescription,
+                    standardOutput: output.stringValue,
+                    standardError: launchError.localizedDescription,
                     timedOut: false
                 )
             }
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
-    private static func readPrefix(
-        _ url: URL,
-        maximumBytes: Int
-    ) -> Data {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return Data() }
-        defer { try? handle.close() }
-        return (try? handle.read(upToCount: maximumBytes)) ?? Data()
+    private static func cleanupStaleCaptureDirectories(
+        olderThan age: TimeInterval = 7 * 24 * 60 * 60
+    ) {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        let now = Date()
+        for entry in entries where entry.lastPathComponent.hasPrefix("fleetmesh-command-") {
+            guard let values = try? entry.resourceValues(
+                forKeys: [.isDirectoryKey, .contentModificationDateKey]
+            ), values.isDirectory == true,
+            let modified = values.contentModificationDate,
+            now.timeIntervalSince(modified) >= age else { continue }
+            try? fileManager.removeItem(at: entry)
+        }
+    }
+}
+
+private final class BoundedPipeCapture: @unchecked Sendable {
+    let pipe = Pipe()
+
+    private let limit: Int
+    private let lock = NSLock()
+    private let completion = DispatchSemaphore(value: 0)
+    private var buffer = Data()
+    private var completed = false
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    func start() {
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            guard let self else { return }
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+                self.markCompleted()
+                return
+            }
+            self.append(chunk)
+        }
+    }
+
+    func closeParentWriter() {
+        try? pipe.fileHandleForWriting.close()
+    }
+
+    func finish() {
+        closeParentWriter()
+        if completion.wait(timeout: .now() + 1) == .timedOut {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            markCompleted()
+        }
+        try? pipe.fileHandleForReading.close()
+    }
+
+    var stringValue: String {
+        lock.lock()
+        let data = buffer
+        lock.unlock()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    private func append(_ data: Data) {
+        lock.lock()
+        let remaining = max(0, limit - buffer.count)
+        if remaining > 0 {
+            buffer.append(data.prefix(remaining))
+        }
+        lock.unlock()
+    }
+
+    private func markCompleted() {
+        lock.lock()
+        let shouldSignal = !completed
+        completed = true
+        lock.unlock()
+        if shouldSignal {
+            completion.signal()
+        }
     }
 }
 
