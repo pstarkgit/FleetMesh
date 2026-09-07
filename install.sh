@@ -3,13 +3,49 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+resolve_developer_dir() {
+    local requested="${DEVELOPER_DIR:-}"
+    local selected
+
+    if [ -n "$requested" ] && [ -d "$requested" ] \
+        && DEVELOPER_DIR="$requested" /usr/bin/xcrun --find swift >/dev/null 2>&1; then
+        printf '%s\n' "$requested"
+        return 0
+    fi
+
+    selected="$(/usr/bin/env -u DEVELOPER_DIR /usr/bin/xcode-select -p 2>/dev/null || true)"
+    if [ -n "$selected" ] && [ -d "$selected" ] \
+        && DEVELOPER_DIR="$selected" /usr/bin/xcrun --find swift >/dev/null 2>&1; then
+        if [ -n "$requested" ] && [ "$requested" != "$selected" ]; then
+            echo "WARNING: ignoring invalid DEVELOPER_DIR '$requested'; using '$selected'." >&2
+        fi
+        printf '%s\n' "$selected"
+        return 0
+    fi
+
+    echo "ERROR: no valid Apple developer directory was found. Install Xcode or Command Line Tools, then run xcode-select --install." >&2
+    return 1
+}
+
+DEVELOPER_DIR="$(resolve_developer_dir)"
+export DEVELOPER_DIR
+
+if [ "${1:-}" = "--print-developer-dir" ]; then
+    printf '%s\n' "$DEVELOPER_DIR"
+    exit 0
+fi
+
+if [ "${1:-}" != "" ]; then
+    echo "ERROR: unsupported argument: $1" >&2
+    exit 2
+fi
+
 if [ "$(id -u)" -eq 0 ]; then
     echo "ERROR: run ./install.sh as yourself, not as root" >&2
     exit 1
 fi
 
-export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
-swift build -c release
+/usr/bin/xcrun swift build -c release
 
 VERSION_FILE="Sources/DeviceSync/DeviceSyncVersion.swift"
 VERSION="$(sed -n 's/.*static let current = "\([^"]*\)".*/\1/p' "$VERSION_FILE" | head -1)"

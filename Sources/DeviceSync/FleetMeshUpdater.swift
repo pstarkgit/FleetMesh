@@ -18,16 +18,19 @@ final class FleetMeshUpdater {
 
     private let sourceDirectory: URL?
     private let commandRunner: any CommandRunning
-    private let installerLauncher: @MainActor (URL) throws -> Void
+    private let installerRunner: any CommandRunning
+    private let updateLogURL: URL
 
     init(
         sourceDirectory: URL? = FleetMeshUpdater.installedSourceDirectory,
         commandRunner: any CommandRunning = ProcessCommandRunner(),
-        installerLauncher: @escaping @MainActor (URL) throws -> Void = FleetMeshUpdater.launchInstaller
+        installerRunner: any CommandRunning = ProcessCommandRunner(),
+        updateLogURL: URL = FleetMeshUpdater.defaultUpdateLogURL
     ) {
         self.sourceDirectory = sourceDirectory
         self.commandRunner = commandRunner
-        self.installerLauncher = installerLauncher
+        self.installerRunner = installerRunner
+        self.updateLogURL = updateLogURL
     }
 
     static var installedSourceDirectory: URL? {
@@ -38,6 +41,12 @@ final class FleetMeshUpdater {
             atPath: url.appendingPathComponent(".git").path
         ) else { return nil }
         return url
+    }
+
+    static var defaultUpdateLogURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/FleetForge", isDirectory: true)
+            .appendingPathComponent("update.log")
     }
 
     var canCheck: Bool { sourceDirectory != nil }
@@ -120,7 +129,6 @@ final class FleetMeshUpdater {
     func installAvailableUpdate() async {
         await check()
         guard case .available = state, let sourceDirectory else { return }
-        state = .updating
 
         let pull = await git(
             ["pull", "--ff-only", "origin", "main"],
@@ -132,11 +140,74 @@ final class FleetMeshUpdater {
             return
         }
 
-        do {
-            try installerLauncher(sourceDirectory)
-        } catch {
-            state = .failed("The update was fetched, but FleetMesh could not launch its signed installer: \(error.localizedDescription)")
+        let installer = sourceDirectory.appendingPathComponent("install.sh")
+        guard FileManager.default.isExecutableFile(atPath: installer.path) else {
+            state = .failed("The verified FleetMesh checkout has no executable install.sh.")
+            return
         }
+
+        state = .updating
+        try? prepareUpdateLog()
+        let result = await installerRunner.run(
+            executable: installer,
+            arguments: [],
+            environment: ["FLEETMESH_UPDATE": "1"],
+            timeout: 30 * 60
+        )
+        try? persistUpdateLog(result)
+
+        if result.timedOut {
+            state = .failed(
+                "The installer exceeded 30 minutes and was stopped. \(Self.failureDetail(result)) See ~/Library/Logs/FleetForge/update.log."
+            )
+        } else if result.exitCode != 0 {
+            state = .failed(
+                "The installer exited with status \(result.exitCode). \(Self.failureDetail(result)) See ~/Library/Logs/FleetForge/update.log."
+            )
+        } else {
+            // A successful installer normally replaces this process and relaunches
+            // FleetMesh before control returns. This state covers test runners and
+            // an installer that completed without terminating the old process.
+            state = .upToDate(Date())
+        }
+    }
+
+    private func prepareUpdateLog() throws {
+        try FileManager.default.createDirectory(
+            at: updateLogURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let header = "FleetMesh update started \(Date().ISO8601Format())\n"
+        try Data(header.utf8).write(to: updateLogURL, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: updateLogURL.path
+        )
+    }
+
+    private func persistUpdateLog(_ result: CommandResult) throws {
+        let output = [result.standardOutput, result.standardError]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        let body = "exit=\(result.exitCode) timedOut=\(result.timedOut)\n\(output)\n"
+        try Data(body.utf8).write(to: updateLogURL, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: updateLogURL.path
+        )
+    }
+
+    static func failureDetail(_ result: CommandResult, limit: Int = 1_200) -> String {
+        let combined = [result.standardError, result.standardOutput]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !combined.isEmpty else { return "No installer detail was captured." }
+        let tail = String(combined.suffix(limit))
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        return tail
     }
 
     private func git(
@@ -152,43 +223,4 @@ final class FleetMeshUpdater {
         )
     }
 
-    private static func launchInstaller(_ sourceDirectory: URL) throws {
-        let installer = sourceDirectory.appendingPathComponent("install.sh")
-        guard FileManager.default.isExecutableFile(atPath: installer.path) else {
-            throw FleetMeshUpdaterError.missingInstaller
-        }
-        let logDirectory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/FleetForge", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: logDirectory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let logURL = logDirectory.appendingPathComponent("update.log")
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            _ = FileManager.default.createFile(
-                atPath: logURL.path,
-                contents: nil,
-                attributes: [.posixPermissions: 0o600]
-            )
-        }
-        let log = try FileHandle(forWritingTo: logURL)
-        try log.seekToEnd()
-
-        let process = Process()
-        process.executableURL = installer
-        process.currentDirectoryURL = sourceDirectory
-        process.standardOutput = log
-        process.standardError = log
-        process.environment = ProcessInfo.processInfo.environment
-        try process.run()
-    }
-}
-
-enum FleetMeshUpdaterError: LocalizedError {
-    case missingInstaller
-
-    var errorDescription: String? {
-        "The verified FleetMesh source checkout does not contain an executable install.sh."
-    }
 }

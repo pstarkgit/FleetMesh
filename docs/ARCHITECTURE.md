@@ -122,10 +122,16 @@ fetch `origin/main` only from that checkout and require an empty worktree plus
 fast-forward ancestry. Dirty, local-ahead, and diverged trees are never merged,
 stashed, reset, or overwritten.
 
-An explicit Update action performs `git pull --ff-only` and launches the
-hard-coded product `install.sh`. The installer owns rebuilding, signing,
-transactional bundle replacement, self-check, and relaunch. Updater state and
-release notes are local product metadata and never enter the fleet protocol.
+An explicit Update action performs `git pull --ff-only` and runs the hard-coded
+product `install.sh` through the same bounded process infrastructure used by
+Doctor. The updater monitors nonzero exit and launch failure, enforces a
+30-minute timeout, persists a private bounded log, and always leaves its
+progress state on terminal failure. The installer validates an explicit
+Developer directory or a `DEVELOPER_DIR`-cleared `xcode-select -p`, so release
+installation supports either full Xcode or Command Line Tools. The installer
+owns rebuilding, signing, transactional bundle replacement, self-check, and
+relaunch. Updater state and release notes are local product metadata and never
+enter the fleet protocol.
 
 ## Managed product boundaries
 
