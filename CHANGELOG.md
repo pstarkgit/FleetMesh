@@ -1,3 +1,22 @@
+## 0.1.20 — 2026-09-07
+
+- Added a prominent **Fix It** plan in Doctor that turns approved local drift
+  into one confirmed Diagnose → Guard → Repair → Prove workflow.
+- Made Codex and Warp theme drift repairable from bundled, code-reviewed assets.
+  FleetMesh validates each bundle against the exact DDB desired-state fingerprint,
+  backs up the existing directory, stages and verifies replacement files, and
+  rolls back if installed proof does not match.
+- Made clean Harness Sync drift repairable from its approved GitLab origin.
+  FleetMesh validates the origin, fetches without prompts, requires the current
+  commit to be an ancestor of DDB's immutable target revision, performs only a
+  fast-forward merge, runs Harness Sync's owner bootstrap, and rescans.
+- Kept DDB declarative: manifests provide desired fingerprints and revisions,
+  never executable commands, repository URLs, or arbitrary filesystem paths.
+- Added per-item **Fix It** actions, aggregate confirmation, bounded output,
+  sequential execution, final refresh, and verified-versus-unresolved summary.
+- Added planner, asset replacement/mismatch, approved-origin, Git ancestry,
+  fast-forward-only, and destructive-command exclusion regressions.
+
 ## 0.1.19 — 2026-09-07
 
 - Removed the full-Xcode assumption from installation. FleetMesh now validates an

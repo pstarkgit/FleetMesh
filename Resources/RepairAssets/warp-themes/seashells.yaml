@@ -1,0 +1,24 @@
+name: seashells
+accent: "#255a62"
+background: "#061923"
+details: darker
+foreground: "#e5c49e"
+terminal_colors:
+  bright:
+    black: "#545d65"
+    blue: "#3ec6ff"
+    cyan: "#97b9c0"
+    green: "#97b9c0"
+    magenta: "#c6e8f1"
+    red: "#dd998a"
+    white: "#ffe9d7"
+    yellow: "#fedaae"
+  normal:
+    black: "#1d485f"
+    blue: "#1f9ed6"
+    cyan: "#5fb1c2"
+    green: "#5fb1c2"
+    magenta: "#77dbf4"
+    red: "#db662d"
+    white: "#e5c49e"
+    yellow: "#feaf3c"

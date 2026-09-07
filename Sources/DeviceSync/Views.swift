@@ -1639,7 +1639,14 @@ private struct FlowStep: View {
 struct DoctorView: View {
     @Bindable var store: FleetStore
     @State private var pendingRepair: DoctorFinding?
+    @State private var pendingFixAll = false
     @State private var pendingConfigurationBaseline: ComponentObservation?
+
+    private var fixableFindings: [DoctorFinding] {
+        guard let assessment = store.selectedAssessment,
+              assessment.snapshot.machineID == store.localSnapshot?.machineID else { return [] }
+        return store.doctorFindings(for: assessment).filter(\.canRepair)
+    }
 
     var body: some View {
         ScrollView {
@@ -1666,6 +1673,29 @@ struct DoctorView: View {
                     )
                     DoctorPipeline(isRunning: store.isDoctorRunning)
                     DoctorSummary(findings: findings)
+
+                    if !fixableFindings.isEmpty {
+                        HStack(spacing: 14) {
+                            Image(systemName: "wrench.and.screwdriver.fill")
+                                .font(.system(size: 22, weight: .semibold))
+                                .foregroundStyle(DSTheme.orange)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Bring this Mac up to fleet standard")
+                                    .font(.headline)
+                                    .foregroundStyle(DSTheme.ink)
+                                Text("Review and run \(fixableFindings.count) DDB-pinned, built-in repair(s), then publish fresh proof.")
+                                    .font(.caption)
+                                    .foregroundStyle(DSTheme.inkSoft)
+                            }
+                            Spacer()
+                            Button("Fix It…") { pendingFixAll = true }
+                                .buttonStyle(.borderedProminent)
+                                .tint(DSTheme.orange)
+                                .disabled(store.isBusy)
+                                .accessibilityIdentifier("doctor.fixAll")
+                        }
+                        .deviceCard()
+                    }
 
                     if assessment.snapshot.machineID != store.localSnapshot?.machineID {
                         let hasLocalConnection = store.selectedDevice?.localConnection != nil
@@ -1728,6 +1758,26 @@ struct DoctorView: View {
             .padding(28)
         }
         .confirmationDialog(
+            "Run Fix It for \(fixableFindings.count) item(s)?",
+            isPresented: $pendingFixAll,
+            titleVisibility: .visible
+        ) {
+            Button("Run guarded Fix It") {
+                let componentIDs = fixableFindings.map(\.id)
+                guard let machineID = store.selectedAssessment?.snapshot.machineID else { return }
+                pendingFixAll = false
+                Task {
+                    await store.repairAll(
+                        componentIDs: componentIDs,
+                        targetMachineID: machineID
+                    )
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingFixAll = false }
+        } message: {
+            Text("FleetMesh will re-read DDB before every change. Theme directories are backed up and replaced only by bundled assets whose fingerprint exactly matches desired state. Harness Sync fetches only its approved origin and fast-forwards only to the DDB-pinned revision before running its owner bootstrap. Every item is rescanned and published as proof.")
+        }
+        .confirmationDialog(
             pendingRepair.map { "Run \($0.title)?" } ?? "Run product repair?",
             isPresented: Binding(
                 get: { pendingRepair != nil },
@@ -1748,8 +1798,8 @@ struct DoctorView: View {
             }
             Button("Cancel", role: .cancel) { pendingRepair = nil }
         } message: {
-            if let finding = pendingRepair, let recipe = finding.recipe {
-                Text("FleetMesh will run \(recipe.displayCommand), then re-scan and publish the observed result. The fleet baseline will not change.")
+            if let finding = pendingRepair, let action = finding.repairDisplayAction {
+                Text("FleetMesh will run \(action), then re-scan and publish the observed result. The fleet baseline will not change.")
             }
         }
         .confirmationDialog(
@@ -1989,7 +2039,7 @@ private struct DoctorFindingRow: View {
                 Spacer()
 
                 if finding.canRepair {
-                    Button(isActive ? "Repairing…" : "Repair…") { onRepair() }
+                    Button(isActive ? "Fixing…" : "Fix It…") { onRepair() }
                         .buttonStyle(.borderedProminent)
                         .tint(DSTheme.orange)
                         .disabled(doctorBusy || !isLocalMachine)
@@ -2078,10 +2128,10 @@ private struct DoctorFindingRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 9))
             }
 
-            if finding.canRepair, let recipe = finding.recipe {
+            if finding.canRepair, let action = finding.repairDisplayAction {
                 HStack(spacing: 8) {
                     Image(systemName: "terminal")
-                    Text(recipe.displayCommand)
+                    Text(action)
                         .lineLimit(1)
                         .textSelection(.enabled)
                     Spacer()
