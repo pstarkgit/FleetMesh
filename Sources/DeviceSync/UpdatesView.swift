@@ -30,7 +30,7 @@ struct FleetMeshUpdatesView: View {
                 .foregroundStyle(DSTheme.cyan)
             Text("Updates & What's New")
                 .font(.system(size: 30, weight: .bold, design: .rounded))
-            Text("Check the clean attached source for updates and review the release notes bundled with this build.")
+            Text("Check GitHub Releases for a signed, notarized FleetMesh build. Updates verify checksum, Developer ID, Team ID, provenance, architecture, and Gatekeeper before installation; no source checkout or compiler is required.")
                 .font(.system(size: 14))
                 .foregroundStyle(DSTheme.inkSoft)
         }
@@ -102,15 +102,15 @@ struct FleetMeshUpdatesView: View {
         case .idle:
             "Not checked yet."
         case .checking:
-            "Checking clean origin/main ancestry…"
+            "Checking signed GitHub Releases…"
         case .upToDate:
             "You are up to date."
         case .available(let version):
-            "FleetMesh \(version) is available from origin/main."
+            "FleetMesh \(version) is available as a signed, notarized prebuilt app."
         case .blocked(let detail):
             detail
         case .updating:
-            "Fast-forwarding the clean source and launching the product installer…"
+            "Downloading and verifying the prebuilt app; no local compile is required…"
         case .failed(let detail):
             detail
         }

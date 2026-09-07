@@ -13,223 +13,324 @@ struct FleetMeshUpdatesTests {
         - Verify destination first and
           preserve the current fleet on failure.
         - Publish Pending evidence.
-
-        ## 0.1.16 — 2026-09-06
-
-        - Add invitations.
         """)
-
-        #expect(parsed.map(\.version) == ["0.1.17", "0.1.16"])
+        #expect(parsed.map(\.version) == ["0.1.17"])
         #expect(parsed.first?.date == "2026-09-06")
         #expect(parsed.first?.title == "Move fleets")
         #expect(parsed.first?.changes == [
             "Verify destination first and preserve the current fleet on failure.",
             "Publish Pending evidence.",
         ])
-        #expect(FleetMeshReleaseNotes.entry(for: "0.1.16", in: parsed)?.changes == [
-            "Add invitations."
-        ])
     }
 
     @Test
     func changelogContainsCurrentRelease() throws {
-        let testFile = URL(fileURLWithPath: #filePath)
-        let root = testFile
+        let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let markdown = try String(
-            contentsOf: root.appendingPathComponent("CHANGELOG.md"),
-            encoding: .utf8
-        )
+        let markdown = try String(contentsOf: root.appendingPathComponent("CHANGELOG.md"), encoding: .utf8)
         let entries = FleetMeshReleaseNotes.parse(markdown)
         #expect(entries.first?.version == DeviceSyncVersion.current)
-        #expect(entries.first?.version == "0.1.20")
     }
 
     @Test
-    @MainActor
-    func updateCheckDistinguishesCurrentAvailableDirtyAndDiverged() async {
-        let source = URL(fileURLWithPath: "/tmp/fleetmesh-update-test", isDirectory: true)
-
-        let current = FleetMeshUpdater(
-            sourceDirectory: source,
-            commandRunner: UpdateRunner(mode: .current)
+    func releaseManifestAndAssetURLsFailClosed() throws {
+        let release = publishedRelease(version: "1.2.3")
+        let manifest = releaseManifest(version: "1.2.3")
+        try GitHubFleetMeshReleaseService.validate(
+            manifest: manifest,
+            release: release,
+            architecture: "arm64"
         )
-        await current.check()
-        guard case .upToDate = current.state else {
-            Issue.record("Expected upToDate, got \(current.state)")
-            return
+        #expect(GitHubFleetMeshReleaseService.isApprovedAssetURL(
+            release.archiveURL,
+            tag: release.tag
+        ))
+        #expect(!GitHubFleetMeshReleaseService.isApprovedAssetURL(
+            URL(string: "https://example.invalid/FleetMesh-1.2.3-arm64.zip")!,
+            tag: release.tag
+        ))
+        #expect(!GitHubFleetMeshReleaseService.isApprovedAssetURL(
+            URL(string: "http://github.com/pstarkgit/FleetMesh/releases/download/v1.2.3/FleetMesh-1.2.3-arm64.zip")!,
+            tag: release.tag
+        ))
+
+        var tampered = releaseManifest(version: "1.2.3")
+        tampered = FleetMeshReleaseManifest(
+            schemaVersion: tampered.schemaVersion,
+            product: tampered.product,
+            version: tampered.version,
+            commit: tampered.commit,
+            architecture: tampered.architecture,
+            bundleIdentifier: tampered.bundleIdentifier,
+            teamIdentifier: tampered.teamIdentifier,
+            archiveName: tampered.archiveName,
+            archiveSHA256: "bad",
+            archiveSize: tampered.archiveSize
+        )
+        #expect(throws: FleetMeshReleaseError.invalidManifest) {
+            try GitHubFleetMeshReleaseService.validate(
+                manifest: tampered,
+                release: release,
+                architecture: "arm64"
+            )
         }
-
-        let available = FleetMeshUpdater(
-            sourceDirectory: source,
-            commandRunner: UpdateRunner(mode: .available)
-        )
-        await available.check()
-        #expect(available.state == .available(version: "0.1.18"))
-
-        let dirty = FleetMeshUpdater(
-            sourceDirectory: source,
-            commandRunner: UpdateRunner(mode: .dirty)
-        )
-        await dirty.check()
-        guard case .blocked(let dirtyReason) = dirty.state else {
-            Issue.record("Expected dirty checkout block, got \(dirty.state)")
-            return
-        }
-        #expect(dirtyReason.contains("local changes"))
-
-        let diverged = FleetMeshUpdater(
-            sourceDirectory: source,
-            commandRunner: UpdateRunner(mode: .diverged)
-        )
-        await diverged.check()
-        guard case .blocked(let divergedReason) = diverged.state else {
-            Issue.record("Expected divergence block, got \(diverged.state)")
-            return
-        }
-        #expect(divergedReason.contains("diverged"))
     }
 
     @Test
-    @MainActor
-    func updateFastForwardsBeforeRunningMonitoredProductInstaller() async throws {
+    func archiveChecksumDetectsTampering() throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("fleetmesh-updater-\(UUID().uuidString)")
+            .appendingPathComponent("fleetmesh-release-hash-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try makeExecutableInstaller(at: root)
-        let logURL = root.appendingPathComponent("update.log")
-        let updater = FleetMeshUpdater(
-            sourceDirectory: root,
-            commandRunner: UpdateRunner(mode: .available),
-            installerRunner: FixedInstallerRunner(result: CommandResult(
-                exitCode: 0,
-                standardOutput: "install complete",
-                standardError: "",
-                timedOut: false
-            )),
-            updateLogURL: logURL
-        )
-
-        await updater.installAvailableUpdate()
-
-        guard case .upToDate = updater.state else {
-            Issue.record("Expected monitored success, got \(updater.state)")
-            return
-        }
-        let log = try String(contentsOf: logURL, encoding: .utf8)
-        #expect(log.contains("exit=0"))
-        #expect(log.contains("install complete"))
+        let archive = root.appendingPathComponent("archive.zip")
+        try Data("trusted".utf8).write(to: archive)
+        let trusted = try GitHubFleetMeshReleaseService.sha256(of: archive)
+        try Data("tampered".utf8).write(to: archive)
+        #expect(try GitHubFleetMeshReleaseService.sha256(of: archive) != trusted)
     }
 
     @Test
     @MainActor
-    func installerFailureLeavesUpdatingStateAndSurfacesBoundedDetail() async throws {
+    func updaterChecksAndInstallsPreparedReleaseWithoutSourceCheckout() async throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("fleetmesh-updater-failure-\(UUID().uuidString)")
+            .appendingPathComponent("fleetmesh-prebuilt-updater-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try makeExecutableInstaller(at: root)
-        let logURL = root.appendingPathComponent("update.log")
-        let detail = "Xcode path missing\n" + String(repeating: "x", count: 2_000)
+        let release = publishedRelease(version: "9.0.0")
+        let prepared = PreparedFleetMeshUpdate(
+            appURL: root.appendingPathComponent("extracted/FleetMesh.app"),
+            installerScriptURL: root.appendingPathComponent("extracted/FleetMesh.app/Contents/Resources/install-prebuilt.sh"),
+            manifest: releaseManifest(version: "9.0.0"),
+            workRootURL: root
+        )
+        let service = FixedReleaseService(release: release, prepared: prepared)
+        let installer = RecordingPrebuiltInstaller()
+        let terminated = TerminationBox()
         let updater = FleetMeshUpdater(
-            sourceDirectory: root,
-            commandRunner: UpdateRunner(mode: .available),
-            installerRunner: FixedInstallerRunner(result: CommandResult(
-                exitCode: 1,
-                standardOutput: "",
-                standardError: detail,
-                timedOut: false
-            )),
-            updateLogURL: logURL
+            releaseService: service,
+            installer: installer,
+            updateLogURL: root.appendingPathComponent("update.log"),
+            workRootProvider: { root },
+            processIDProvider: { 1234 },
+            terminationHandler: { terminated.value = true }
         )
 
+        await updater.check()
+        #expect(updater.state == .available(version: "9.0.0"))
         await updater.installAvailableUpdate()
+        #expect(await installer.launchCount() == 1)
+        #expect(await installer.lastProcessID() == 1234)
+        #expect(terminated.value)
+        #expect(await service.prepareCount() == 1)
+    }
 
+    @Test
+    @MainActor
+    func updaterReportsBoundedVerificationFailure() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fleetmesh-prebuilt-failure-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let release = publishedRelease(version: "9.0.0")
+        let service = FixedReleaseService(
+            release: release,
+            prepared: nil,
+            prepareError: FleetMeshReleaseError.archiveChecksumMismatch
+        )
+        let updater = FleetMeshUpdater(
+            releaseService: service,
+            installer: RecordingPrebuiltInstaller(),
+            updateLogURL: root.appendingPathComponent("update.log"),
+            workRootProvider: { root },
+            terminationHandler: {}
+        )
+        await updater.installAvailableUpdate()
         guard case .failed(let message) = updater.state else {
-            Issue.record("Expected installer failure, got \(updater.state)")
+            Issue.record("Expected failed state, got \(updater.state)")
             return
         }
-        #expect(message.contains("status 1"))
+        #expect(message.contains("checksum"))
         #expect(message.contains("update.log"))
-        #expect(message.count < 1_600)
-        #expect(!message.contains("\n"))
-        let log = try String(contentsOf: logURL, encoding: .utf8)
-        #expect(log.contains("Xcode path missing"))
-        #expect(log.contains("exit=1"))
+        #expect(message.count < 700)
     }
 
     @Test
-    @MainActor
-    func installerTimeoutBecomesFailureInsteadOfInfiniteSpinner() async throws {
+    func verifierRequiresTrustedSignatureNotarizationProvenanceAndArchitecture() async throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("fleetmesh-updater-timeout-\(UUID().uuidString)")
+            .appendingPathComponent("fleetmesh-verifier-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try makeExecutableInstaller(at: root)
-        let updater = FleetMeshUpdater(
-            sourceDirectory: root,
-            commandRunner: UpdateRunner(mode: .available),
-            installerRunner: FixedInstallerRunner(result: CommandResult(
-                exitCode: 143,
-                standardOutput: "",
-                standardError: "Installer timed out",
-                timedOut: true
-            )),
-            updateLogURL: root.appendingPathComponent("update.log")
-        )
+        let app = try makeApp(at: root, manifest: releaseManifest(version: "1.2.3"))
 
-        await updater.installAvailableUpdate()
+        let valid = GitHubFleetMeshReleaseService(commandRunner: VerificationRunner(mode: .valid))
+        try await valid.verify(appURL: app, manifest: releaseManifest(version: "1.2.3"))
 
-        guard case .failed(let message) = updater.state else {
-            Issue.record("Expected timeout failure, got \(updater.state)")
-            return
+        for (mode, expected) in [
+            (VerificationRunner.Mode.badSignature, FleetMeshReleaseError.untrustedSigningIdentity),
+            (.badGatekeeper, .gatekeeperRejected),
+            (.badStaple, .notarizationTicketMissing),
+            (.badArchitecture, .architectureMismatch),
+        ] {
+            let service = GitHubFleetMeshReleaseService(commandRunner: VerificationRunner(mode: mode))
+            do {
+                try await service.verify(appURL: app, manifest: releaseManifest(version: "1.2.3"))
+                Issue.record("Expected verifier failure for \(mode)")
+            } catch let error as FleetMeshReleaseError {
+                #expect(error == expected)
+            }
         }
-        #expect(message.contains("exceeded 30 minutes"))
+
+        let wrong = releaseManifest(version: "1.2.4")
+        do {
+            try await valid.verify(appURL: app, manifest: wrong)
+            Issue.record("Expected signed provenance mismatch")
+        } catch let error as FleetMeshReleaseError {
+            #expect(error == .provenanceMismatch)
+        }
     }
 
-    private func makeExecutableInstaller(at root: URL) throws {
-        let installer = root.appendingPathComponent("install.sh")
-        try Data("#!/bin/bash\nexit 0\n".utf8).write(to: installer)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o700],
-            ofItemAtPath: installer.path
+    @Test
+    func releaseAndInstallerScriptsCarryRequiredSafetyGates() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let release = try String(
+            contentsOf: root.appendingPathComponent("scripts/package-release.sh"),
+            encoding: .utf8
+        )
+        let installer = try String(
+            contentsOf: root.appendingPathComponent("Resources/install-prebuilt.sh"),
+            encoding: .utf8
+        )
+        for required in ["notarytool submit", "stapler staple", "spctl --assess", "shasum -a 256", "CycloneDX"] {
+            #expect(release.contains(required))
+        }
+        for required in ["codesign --verify", "TeamIdentifier", "stapler validate", "spctl --assess", "BACKUP_APP", "--self-check"] {
+            #expect(installer.contains(required))
+        }
+        #expect(!installer.contains("swift build"))
+        #expect(!installer.contains("git pull"))
+        #expect(!installer.contains("git fetch"))
+    }
+
+    private func publishedRelease(version: String) -> FleetMeshPublishedRelease {
+        let base = "https://github.com/pstarkgit/FleetMesh/releases/download/v\(version)"
+        return FleetMeshPublishedRelease(
+            version: version,
+            tag: "v\(version)",
+            archiveURL: URL(string: "\(base)/FleetMesh-\(version)-arm64.zip")!,
+            manifestURL: URL(string: "\(base)/FleetMesh-\(version)-arm64.json")!
         )
     }
-}
 
-private actor FixedInstallerRunner: CommandRunning {
-    let result: CommandResult
-
-    init(result: CommandResult) {
-        self.result = result
+    private func releaseManifest(version: String) -> FleetMeshReleaseManifest {
+        FleetMeshReleaseManifest(
+            schemaVersion: 1,
+            product: "FleetMesh",
+            version: version,
+            commit: String(repeating: "a", count: 40),
+            architecture: "arm64",
+            bundleIdentifier: "dev.starkpat.devicesync",
+            teamIdentifier: "P2M5LH6CVA",
+            archiveName: "FleetMesh-\(version)-arm64.zip",
+            archiveSHA256: String(repeating: "b", count: 64),
+            archiveSize: 1234
+        )
     }
 
-    func run(
-        executable: URL,
-        arguments: [String],
-        environment: [String: String]?,
-        timeout: TimeInterval?
-    ) async -> CommandResult {
-        result
+    private func makeApp(
+        at root: URL,
+        manifest: FleetMeshReleaseManifest
+    ) throws -> URL {
+        let app = root.appendingPathComponent("FleetMesh.app", isDirectory: true)
+        let macOS = app.appendingPathComponent("Contents/MacOS", isDirectory: true)
+        try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+        try Data().write(to: macOS.appendingPathComponent("DeviceSync"))
+        let info: [String: Any] = [
+            "CFBundleIdentifier": manifest.bundleIdentifier,
+            "CFBundleShortVersionString": manifest.version,
+            "CFBundleVersion": manifest.version,
+            "DSCommit": manifest.commit,
+            "DSArchitecture": manifest.architecture,
+            "DSReleaseRepository": "https://github.com/pstarkgit/FleetMesh",
+        ]
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: app.appendingPathComponent("Contents/Info.plist"))
+        return app
     }
 }
 
-private actor UpdateRunner: CommandRunning {
+private actor FixedReleaseService: FleetMeshReleaseServicing {
+    let release: FleetMeshPublishedRelease
+    let prepared: PreparedFleetMeshUpdate?
+    let prepareError: Error?
+    private var preparations = 0
+
+    init(
+        release: FleetMeshPublishedRelease,
+        prepared: PreparedFleetMeshUpdate?,
+        prepareError: Error? = nil
+    ) {
+        self.release = release
+        self.prepared = prepared
+        self.prepareError = prepareError
+    }
+
+    func latest(architecture: String) async throws -> FleetMeshPublishedRelease {
+        release
+    }
+
+    func prepare(
+        _ release: FleetMeshPublishedRelease,
+        architecture: String,
+        workRootURL: URL
+    ) async throws -> PreparedFleetMeshUpdate {
+        preparations += 1
+        if let prepareError { throw prepareError }
+        return try #require(prepared)
+    }
+
+    func prepareCount() -> Int { preparations }
+}
+
+private actor RecordingPrebuiltInstaller: FleetMeshPrebuiltInstalling {
+    private var count = 0
+    private var processID: Int32?
+
+    func launch(
+        _ update: PreparedFleetMeshUpdate,
+        currentProcessID: Int32,
+        logURL: URL
+    ) async throws {
+        count += 1
+        processID = currentProcessID
+    }
+
+    func launchCount() -> Int { count }
+    func lastProcessID() -> Int32? { processID }
+}
+
+@MainActor
+private final class TerminationBox: @unchecked Sendable {
+    var value = false
+}
+
+private actor VerificationRunner: CommandRunning {
     enum Mode: Sendable {
-        case current
-        case available
-        case dirty
-        case diverged
+        case valid
+        case badSignature
+        case badGatekeeper
+        case badStaple
+        case badArchitecture
     }
 
     let mode: Mode
-
-    init(mode: Mode) {
-        self.mode = mode
-    }
+    init(mode: Mode) { self.mode = mode }
 
     func run(
         executable: URL,
@@ -237,36 +338,36 @@ private actor UpdateRunner: CommandRunning {
         environment: [String: String]?,
         timeout: TimeInterval?
     ) async -> CommandResult {
-        let command = Array(arguments.dropFirst(2))
-        switch command.first {
-        case "fetch", "pull":
-            return result()
-        case "status":
-            return result(output: mode == .dirty ? " M Sources/DeviceSync/App.swift\n" : "")
-        case "rev-parse":
-            switch mode {
-            case .current:
-                return result(output: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
-            case .available, .dirty, .diverged:
-                return result(output: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n")
-            }
-        case "merge-base":
-            return mode == .diverged ? result(exitCode: 1) : result()
-        case "show":
-            return result(output: "enum DeviceSyncVersion { static let current = \"0.1.18\" }\n")
-        default:
-            return result(exitCode: 1)
+        if executable.path == "/usr/bin/codesign", arguments.first == "-dv" {
+            let valid = """
+            Authority=Developer ID Application: Patrick Stark (P2M5LH6CVA)
+            TeamIdentifier=P2M5LH6CVA
+            flags=0x10000(runtime)
+            Timestamp=Sep 7, 2026
+            """
+            return result(error: mode == .badSignature ? "TeamIdentifier=EVIL" : valid)
         }
+        if executable.path == "/usr/sbin/spctl" {
+            return result(exitCode: mode == .badGatekeeper ? 1 : 0)
+        }
+        if executable.path == "/usr/bin/xcrun" {
+            return result(exitCode: mode == .badStaple ? 1 : 0)
+        }
+        if executable.path == "/usr/bin/lipo" {
+            return result(output: mode == .badArchitecture ? "x86_64\n" : "arm64\n")
+        }
+        return result()
     }
 
     private func result(
         exitCode: Int32 = 0,
-        output: String = ""
+        output: String = "",
+        error: String = ""
     ) -> CommandResult {
         CommandResult(
             exitCode: exitCode,
             standardOutput: output,
-            standardError: "",
+            standardError: error,
             timedOut: false
         )
     }

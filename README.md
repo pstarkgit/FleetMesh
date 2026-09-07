@@ -204,20 +204,29 @@ failure leaves the old fleet unchanged. A same-fleet invitation is a no-op.
 
 ## Updates & What's New
 
-The **Updates** destination always shows the installed version, build commit,
-and release notes bundled from `CHANGELOG.md`. **Check again** fetches only
-`origin/main` from the signed build's attached source checkout. FleetMesh offers
-**Update now** only when the checkout is clean and its current commit can
-fast-forward to the remote commit. Dirty or diverged checkouts are blocked
-rather than merged, reset, stashed, or overwritten.
+The **Updates** destination always shows the installed version, full build commit,
+and release notes bundled from `CHANGELOG.md`. **Check again** reads the latest
+public release metadata from the fixed `pstarkgit/FleetMesh` GitHub repository
+and selects only the exact architecture asset for this Mac. A receiving Mac does
+not need a FleetMesh checkout, Git, Xcode, Command Line Tools, or a signing
+identity.
 
-An accepted update runs `git pull --ff-only` and starts the product-owned
-`install.sh` through FleetMesh's bounded process runner. Nonzero exit and launch
-failure immediately leave the Updating state and show a bounded single-line
-cause plus `~/Library/Logs/FleetForge/update.log`; a 30-minute timeout stops a
-hung installer. A successful installer rebuilds, signs, transactionally
-replaces, self-checks, and relaunches FleetMesh. Update status never changes
-fleet authority, desired state, or device evidence.
+**Update now** downloads a bounded JSON manifest and prebuilt archive over HTTPS.
+FleetMesh validates the owner/repository release URL, schema, exact asset names,
+size, and full SHA-256 before extraction. It then requires exactly one
+`FleetMesh.app`, a strict Developer ID signature from Team `P2M5LH6CVA`, hardened
+runtime, secure timestamp, Gatekeeper acceptance, a stapled Apple notarization
+ticket, matching bundle ID/version/full commit/repository provenance, and an
+arm64-only executable. GitHub metadata and checksums detect corruption but are
+not the authenticity root; the notarized Developer ID signature is.
+
+The verified downloaded app carries its own signed prebuilt installer helper.
+After confirmation it waits for the old process to exit, re-verifies every trust
+gate, backs up `/Applications/FleetMesh.app`, swaps the prebuilt bundle without
+compiling, runs `--self-check`, restores the previous app on failure, refreshes
+only FleetMesh's LaunchAgent, relaunches, and records a private bounded log at
+`~/Library/Logs/FleetForge/update.log`. Update state never changes fleet
+authority, desired state, or device evidence.
 
 ## Doctor
 
@@ -265,6 +274,24 @@ run tests with:
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
+
+### Publish a prebuilt release
+
+A maintainer publishes once from a clean reviewed commit on an arm64 Mac with
+the FleetMesh Developer ID identity and the existing `AuthBar` notarytool
+profile:
+
+```bash
+bash scripts/package-release.sh
+gh release create "v$(/Applications/FleetMesh.app/Contents/MacOS/DeviceSync --version | awk '{print $2}')" \
+  dist/v*/FleetMesh-*.zip dist/v*/FleetMesh-*.json dist/v*/FleetMesh-*.sbom.json
+```
+
+The package command fails closed unless signing, secure timestamping, Apple
+notarization, stapling, Gatekeeper, archive extraction, full commit provenance,
+and architecture verification all pass. Publish all three generated assets from
+the same directory. Receiving Macs use only these reviewed release artifacts;
+they do not run this publisher workflow.
 
 Headless verification:
 

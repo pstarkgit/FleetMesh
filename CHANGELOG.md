@@ -1,3 +1,26 @@
+## 0.1.21 — 2026-09-07
+
+- Replaced per-host source compilation in the in-app updater with signed,
+  notarized prebuilt FleetMesh archives published through GitHub Releases.
+- Added a bounded release manifest with full archive SHA-256 and size, full Git
+  commit, version, architecture, bundle ID, and Developer ID Team ID.
+- Made the downloaded app's Developer ID signature the authenticity trust root.
+  FleetMesh rejects wrong owner/repository URLs, malformed manifests, checksum
+  changes, unexpected archive layout, bad signatures, wrong Team ID, missing
+  hardened runtime or secure timestamp, Gatekeeper rejection, missing stapled
+  notarization, provenance mismatch, and wrong binary architecture.
+- Added a signed `install-prebuilt.sh` helper inside the release app. It
+  re-verifies the app, waits for the old process, backs up the installed bundle,
+  swaps transactionally, self-checks, rolls back on failure, refreshes only
+  FleetMesh's LaunchAgent, relaunches, and writes a private update log.
+- Added a one-machine publisher build with Developer ID timestamping, Apple
+  notarization, stapling, Gatekeeper validation, final archive verification,
+  release manifest, full checksum, and CycloneDX SBOM.
+- Added update-channel tests for URL allowlisting, manifest bounds, archive
+  tampering, trusted signature identity, Gatekeeper, notarization, signed
+  provenance, architecture, installer handoff, rollback contract, and the
+  absence of Git or Swift compilation from receiving-host installation.
+
 ## 0.1.20 — 2026-09-07
 
 - Added a prominent **Fix It** plan in Doctor that turns approved local drift

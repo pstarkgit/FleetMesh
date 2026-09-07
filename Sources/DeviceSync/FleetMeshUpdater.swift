@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -16,31 +17,32 @@ final class FleetMeshUpdater {
 
     private(set) var state: State = .idle
 
-    private let sourceDirectory: URL?
-    private let commandRunner: any CommandRunning
-    private let installerRunner: any CommandRunning
+    private let releaseService: any FleetMeshReleaseServicing
+    private let installer: any FleetMeshPrebuiltInstalling
     private let updateLogURL: URL
+    private let workRootProvider: @Sendable () -> URL
+    private let processIDProvider: @Sendable () -> Int32
+    private let terminationHandler: @MainActor @Sendable () -> Void
+    private var availableRelease: FleetMeshPublishedRelease?
 
     init(
-        sourceDirectory: URL? = FleetMeshUpdater.installedSourceDirectory,
-        commandRunner: any CommandRunning = ProcessCommandRunner(),
-        installerRunner: any CommandRunning = ProcessCommandRunner(),
-        updateLogURL: URL = FleetMeshUpdater.defaultUpdateLogURL
+        releaseService: any FleetMeshReleaseServicing = GitHubFleetMeshReleaseService(),
+        installer: any FleetMeshPrebuiltInstalling = ProcessFleetMeshPrebuiltInstaller(),
+        updateLogURL: URL = FleetMeshUpdater.defaultUpdateLogURL,
+        workRootProvider: @escaping @Sendable () -> URL = FleetMeshUpdater.defaultWorkRoot,
+        processIDProvider: @escaping @Sendable () -> Int32 = {
+            ProcessInfo.processInfo.processIdentifier
+        },
+        terminationHandler: @escaping @MainActor @Sendable () -> Void = {
+            NSApp.terminate(nil)
+        }
     ) {
-        self.sourceDirectory = sourceDirectory
-        self.commandRunner = commandRunner
-        self.installerRunner = installerRunner
+        self.releaseService = releaseService
+        self.installer = installer
         self.updateLogURL = updateLogURL
-    }
-
-    static var installedSourceDirectory: URL? {
-        guard let value = Bundle.main.object(forInfoDictionaryKey: "DSSourceDir") as? String,
-              !value.isEmpty else { return nil }
-        let url = URL(fileURLWithPath: value, isDirectory: true).standardizedFileURL
-        guard FileManager.default.fileExists(
-            atPath: url.appendingPathComponent(".git").path
-        ) else { return nil }
-        return url
+        self.workRootProvider = workRootProvider
+        self.processIDProvider = processIDProvider
+        self.terminationHandler = terminationHandler
     }
 
     static var defaultUpdateLogURL: URL {
@@ -49,178 +51,106 @@ final class FleetMeshUpdater {
             .appendingPathComponent("update.log")
     }
 
-    var canCheck: Bool { sourceDirectory != nil }
+    nonisolated static func defaultWorkRoot() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/FleetMesh/Updates", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    static var architecture: String {
+        #if arch(arm64)
+        "arm64"
+        #elseif arch(x86_64)
+        "x86_64"
+        #else
+        "unknown"
+        #endif
+    }
+
+    var canCheck: Bool { true }
 
     func check() async {
-        guard let sourceDirectory else {
-            state = .blocked("No verified source checkout is attached to this build.")
-            return
-        }
+        if case .updating = state { return }
         state = .checking
-
-        let fetch = await git(
-            ["fetch", "--quiet", "origin", "main"],
-            sourceDirectory: sourceDirectory,
-            timeout: 20
-        )
-        guard fetch.exitCode == 0, !fetch.timedOut else {
-            state = .failed("Could not fetch origin/main. Check network and repository access.")
-            return
-        }
-
-        let status = await git(
-            ["status", "--porcelain"],
-            sourceDirectory: sourceDirectory,
-            timeout: 5
-        )
-        guard status.exitCode == 0 else {
-            state = .failed("Could not inspect the FleetMesh source checkout.")
-            return
-        }
-        guard status.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            state = .blocked("The FleetMesh source checkout has local changes. Commit or preserve them before updating.")
-            return
-        }
-
-        let revisions = await git(
-            ["rev-parse", "HEAD", "origin/main"],
-            sourceDirectory: sourceDirectory,
-            timeout: 5
-        )
-        let lines = revisions.standardOutput
-            .split(separator: "\n")
-            .map(String.init)
-        guard revisions.exitCode == 0, lines.count == 2 else {
-            state = .failed("Could not compare the installed build with origin/main.")
-            return
-        }
-        let local = lines[0]
-        let remote = lines[1]
-        if local != remote {
-            let ancestry = await git(
-                ["merge-base", "--is-ancestor", local, remote],
-                sourceDirectory: sourceDirectory,
-                timeout: 5
-            )
-            guard ancestry.exitCode == 0 else {
-                state = .blocked("The source checkout has diverged from origin/main. FleetMesh will not merge or overwrite it.")
-                return
+        do {
+            let release = try await releaseService.latest(architecture: Self.architecture)
+            guard let comparison = VersionIdentity.compare(
+                release.version,
+                FleetMeshBuildIdentity.version
+            ) else {
+                throw FleetMeshReleaseError.invalidReleaseMetadata
             }
+            if comparison == .orderedDescending {
+                availableRelease = release
+                state = .available(version: release.version)
+            } else {
+                availableRelease = nil
+                state = .upToDate(Date())
+            }
+        } catch {
+            availableRelease = nil
+            state = .failed(Self.safeMessage(error))
         }
-
-        let installedCommit = FleetMeshBuildIdentity.commit ?? "dev"
-        let installedIsCurrent = installedCommit == "dev"
-            ? local == remote
-            : remote.hasPrefix(installedCommit) || installedCommit.hasPrefix(remote)
-        guard local != remote || !installedIsCurrent else {
-            state = .upToDate(Date())
-            return
-        }
-
-        let latest = await git(
-            ["show", "origin/main:Sources/DeviceSync/DeviceSyncVersion.swift"],
-            sourceDirectory: sourceDirectory,
-            timeout: 5
-        )
-        let version = VersionIdentity.extract(from: latest.standardOutput) ?? "new build"
-        state = .available(version: version)
     }
 
     func installAvailableUpdate() async {
-        await check()
-        guard case .available = state, let sourceDirectory else { return }
-
-        let pull = await git(
-            ["pull", "--ff-only", "origin", "main"],
-            sourceDirectory: sourceDirectory,
-            timeout: 30
-        )
-        guard pull.exitCode == 0, !pull.timedOut else {
-            state = .failed("The clean fast-forward update failed. No installer was launched.")
-            return
+        if availableRelease == nil {
+            await check()
         }
-
-        let installer = sourceDirectory.appendingPathComponent("install.sh")
-        guard FileManager.default.isExecutableFile(atPath: installer.path) else {
-            state = .failed("The verified FleetMesh checkout has no executable install.sh.")
-            return
-        }
+        guard case .available = state, let release = availableRelease else { return }
 
         state = .updating
-        try? prepareUpdateLog()
-        let result = await installerRunner.run(
-            executable: installer,
-            arguments: [],
-            environment: ["FLEETMESH_UPDATE": "1"],
-            timeout: 30 * 60
-        )
-        try? persistUpdateLog(result)
-
-        if result.timedOut {
-            state = .failed(
-                "The installer exceeded 30 minutes and was stopped. \(Self.failureDetail(result)) See ~/Library/Logs/FleetForge/update.log."
+        let workRoot = workRootProvider().standardizedFileURL
+        do {
+            try prepareUpdateLog(release: release)
+            let prepared = try await releaseService.prepare(
+                release,
+                architecture: Self.architecture,
+                workRootURL: workRoot
             )
-        } else if result.exitCode != 0 {
-            state = .failed(
-                "The installer exited with status \(result.exitCode). \(Self.failureDetail(result)) See ~/Library/Logs/FleetForge/update.log."
+            try await installer.launch(
+                prepared,
+                currentProcessID: processIDProvider(),
+                logURL: updateLogURL
             )
-        } else {
-            // A successful installer normally replaces this process and relaunches
-            // FleetMesh before control returns. This state covers test runners and
-            // an installer that completed without terminating the old process.
+            terminationHandler()
+            // Test harnesses use a no-op termination handler. A real app exits
+            // here while the signed downloaded helper performs the swap.
             state = .upToDate(Date())
+        } catch {
+            try? FileManager.default.removeItem(at: workRoot)
+            let message = Self.safeMessage(error)
+            try? appendUpdateLog("FAILED: \(message)\n")
+            state = .failed("\(message) See ~/Library/Logs/FleetForge/update.log.")
         }
     }
 
-    private func prepareUpdateLog() throws {
-        try FileManager.default.createDirectory(
+    private func prepareUpdateLog(release: FleetMeshPublishedRelease) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
             at: updateLogURL.deletingLastPathComponent(),
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
-        let header = "FleetMesh update started \(Date().ISO8601Format())\n"
+        let header = "FleetMesh prebuilt update started \(Date().ISO8601Format()) tag=\(release.tag)\n"
         try Data(header.utf8).write(to: updateLogURL, options: .atomic)
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: updateLogURL.path
-        )
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: updateLogURL.path)
     }
 
-    private func persistUpdateLog(_ result: CommandResult) throws {
-        let output = [result.standardOutput, result.standardError]
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-        let body = "exit=\(result.exitCode) timedOut=\(result.timedOut)\n\(output)\n"
-        try Data(body.utf8).write(to: updateLogURL, options: .atomic)
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: updateLogURL.path
-        )
+    private func appendUpdateLog(_ text: String) throws {
+        let handle = try FileHandle(forWritingTo: updateLogURL)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(text.utf8))
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: updateLogURL.path)
     }
 
-    static func failureDetail(_ result: CommandResult, limit: Int = 1_200) -> String {
-        let combined = [result.standardError, result.standardOutput]
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !combined.isEmpty else { return "No installer detail was captured." }
-        let tail = String(combined.suffix(limit))
+    static func safeMessage(_ error: Error, limit: Int = 500) -> String {
+        let message = (error as? LocalizedError)?.errorDescription
+            ?? error.localizedDescription
+        return String(message
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
-        return tail
+            .prefix(limit))
     }
-
-    private func git(
-        _ arguments: [String],
-        sourceDirectory: URL,
-        timeout: TimeInterval
-    ) async -> CommandResult {
-        await commandRunner.run(
-            executable: URL(fileURLWithPath: "/usr/bin/git"),
-            arguments: ["-C", sourceDirectory.path] + arguments,
-            environment: nil,
-            timeout: timeout
-        )
-    }
-
 }

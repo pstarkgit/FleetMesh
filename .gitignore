@@ -4,3 +4,4 @@ DerivedData/
 *.xcresult
 .DS_Store
 
+dist/
