@@ -133,22 +133,27 @@ placement; it never rearranges another app's menu-bar item.
 ### Updates and release notes
 
 The installed bundle includes the same `CHANGELOG.md` whose first entry gates
-installation, so What's New remains available without a source checkout. A
-signed install also records its source checkout path and commit. Update checks
-fetch `origin/main` only from that checkout and require an empty worktree plus
-fast-forward ancestry. Dirty, local-ahead, and diverged trees are never merged,
-stashed, reset, or overwritten.
+release packaging, so What's New remains available without a source checkout.
+In-app updates use only versioned GitHub Release assets from the fixed
+`pstarkgit/FleetMesh` repository. Receiving Macs never compile FleetMesh and do
+not need Git, a checkout, Xcode, Command Line Tools, or signing credentials.
 
-An explicit Update action performs `git pull --ff-only` and runs the hard-coded
-product `install.sh` through the same bounded process infrastructure used by
-Doctor. The updater monitors nonzero exit and launch failure, enforces a
-30-minute timeout, persists a private bounded log, and always leaves its
-progress state on terminal failure. The installer validates an explicit
-Developer directory or a `DEVELOPER_DIR`-cleared `xcode-select -p`, so release
-installation supports either full Xcode or Command Line Tools. The installer
-owns rebuilding, signing, transactional bundle replacement, self-check, and
-relaunch. Updater state and release notes are local product metadata and never
-enter the fleet protocol.
+The release publisher builds once from a clean reviewed commit, stamps the full
+commit/repository/architecture into signed `Info.plist`, signs with Developer ID
+and a secure timestamp, submits to Apple notarization, staples the ticket,
+verifies Gatekeeper, then emits an architecture-specific ZIP, bounded JSON
+manifest, full SHA-256 and size, and CycloneDX SBOM. GitHub release audit history
+controls publication. The signed app is the trust root; mutable release metadata
+cannot authorize an app that fails Developer ID, Team ID, timestamp, Gatekeeper,
+stapling, bundle identity, provenance, version, commit, or architecture checks.
+
+An explicit Update action downloads into a private cache, validates all gates,
+and launches only `install-prebuilt.sh` from inside the already verified signed
+app. The helper independently repeats trust checks, waits for the old process,
+backs up the current bundle, moves the prebuilt app into `/Applications`, runs
+its self-check, rolls back if proof fails, refreshes FleetMesh's own LaunchAgent,
+and relaunches. No downloaded command, shell fragment, repository URL, DDB value,
+or manifest path becomes executable input. Private bounded logs remain local.
 
 ## Managed product boundaries
 

@@ -30,13 +30,14 @@ resolve_developer_dir() {
 DEVELOPER_DIR="$(resolve_developer_dir)"
 export DEVELOPER_DIR
 
+BUILD_APP_OUTPUT=""
 if [ "${1:-}" = "--print-developer-dir" ]; then
     printf '%s\n' "$DEVELOPER_DIR"
     exit 0
-fi
-
-if [ "${1:-}" != "" ]; then
-    echo "ERROR: unsupported argument: $1" >&2
+elif [ "${1:-}" = "--build-app" ] && [ "$#" -eq 2 ]; then
+    BUILD_APP_OUTPUT="$2"
+elif [ "${1:-}" != "" ]; then
+    echo "ERROR: unsupported arguments" >&2
     exit 2
 fi
 
@@ -70,9 +71,16 @@ STAGE_APP="$STAGE_ROOT/FleetMesh.app"
 BACKUP_FINAL_APP="$STAGE_ROOT/FleetMesh.app.previous"
 BACKUP_FORMER_APP="$STAGE_ROOT/FleetForge.app.previous"
 BACKUP_LEGACY_APP="$STAGE_ROOT/Device Sync.app.previous"
-COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
+COMMIT="$(git rev-parse HEAD 2>/dev/null || echo dev)"
 SOURCE_DIR="$(pwd -P)"
-BUILD_DATE="$(date '+%Y-%m-%d %H:%M')"
+ARCHITECTURE="$(uname -m)"
+RELEASE_REPOSITORY="https://github.com/pstarkgit/FleetMesh"
+if [ -n "$BUILD_APP_OUTPUT" ]; then
+    SOURCE_STAMP="$RELEASE_REPOSITORY"
+else
+    SOURCE_STAMP="$SOURCE_DIR"
+fi
+BUILD_DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 cleanup() {
     if [ ! -d "$FINAL_APP" ] && [ -d "$BACKUP_FINAL_APP" ]; then
@@ -123,6 +131,8 @@ mkdir -p "$STAGE_APP/Contents/MacOS" "$STAGE_APP/Contents/Resources"
 cp .build/release/DeviceSync "$STAGE_APP/Contents/MacOS/DeviceSync"
 cp Resources/Info.plist "$STAGE_APP/Contents/Info.plist"
 cp CHANGELOG.md "$STAGE_APP/Contents/Resources/CHANGELOG.md"
+cp Resources/install-prebuilt.sh "$STAGE_APP/Contents/Resources/install-prebuilt.sh"
+chmod 755 "$STAGE_APP/Contents/Resources/install-prebuilt.sh"
 cp -R Resources/RepairAssets "$STAGE_APP/Contents/Resources/RepairAssets"
 cp Resources/dev.starkpat.devicesync.snapshot.plist \
     "$STAGE_APP/Contents/Resources/dev.starkpat.devicesync.snapshot.plist"
@@ -133,8 +143,10 @@ fi
 /usr/libexec/PlistBuddy \
     -c "Set :CFBundleShortVersionString $VERSION" \
     -c "Set :CFBundleVersion $VERSION" \
-    -c "Set :DSSourceDir $SOURCE_DIR" \
+    -c "Set :DSSourceDir $SOURCE_STAMP" \
     -c "Set :DSCommit $COMMIT" \
+    -c "Set :DSArchitecture $ARCHITECTURE" \
+    -c "Set :DSReleaseRepository $RELEASE_REPOSITORY" \
     -c "Set :DSBuildDate $BUILD_DATE" \
     "$STAGE_APP/Contents/Info.plist"
 
@@ -160,6 +172,21 @@ else
     SIGNING_LABEL="ad-hoc"
 fi
 codesign --verify --deep --strict "$STAGE_APP"
+
+if [ -n "$BUILD_APP_OUTPUT" ]; then
+    case "$BUILD_APP_OUTPUT" in
+        /*.app) ;;
+        *) echo "ERROR: --build-app requires an absolute .app output path" >&2; exit 2 ;;
+    esac
+    if [ -e "$BUILD_APP_OUTPUT" ]; then
+        echo "ERROR: build output already exists: $BUILD_APP_OUTPUT" >&2
+        exit 1
+    fi
+    mkdir -p "$(dirname "$BUILD_APP_OUTPUT")"
+    mv "$STAGE_APP" "$BUILD_APP_OUTPUT"
+    echo "Built signed FleetMesh $VERSION ($COMMIT) at $BUILD_APP_OUTPUT"
+    exit 0
+fi
 
 if [ -d "$FINAL_APP" ] || [ -d "$FORMER_APP" ] || [ -d "$LEGACY_APP" ]; then
     stop_device_sync_processes
