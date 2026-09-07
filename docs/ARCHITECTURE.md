@@ -143,7 +143,11 @@ Current product boundaries:
 - ai-continuum owns its SQLite databases and runtime health.
 - AuthBar owns its app, agents, and auth semantics.
 - Stow owns window/menu-bar layout behavior.
-- Murmr Voice and Model Bridge own their own app/runtime checks.
+- Murmr Voice owns its signed/notarized distribution, Sparkle update feed,
+  runtime, and macOS permission state. FleetMesh may compare its installed
+  bundle version with the feed and link to product distribution, but never run
+  the developer-only `~/code/Murmur/install.sh` as product repair.
+- Model Bridge owns its own app/runtime checks.
 - Kiro Crew is the active managed agent product; Builder Toolbox owns its
   installation and update lifecycle.
 - MeshClaw is retired and must not be treated as current Kiro Crew evidence.

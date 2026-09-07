@@ -154,6 +154,28 @@ struct ProductVersionCheck: Codable, Hashable, Sendable {
     }
 }
 
+enum ApplicationInstallationLocation: String, Codable, Hashable, Sendable {
+    case systemApplications
+    case userApplications
+    case runningBundle
+
+    var label: String {
+        switch self {
+        case .systemApplications: "System Applications"
+        case .userApplications: "User Applications"
+        case .runningBundle: "Running bundle outside Applications folders"
+        }
+    }
+
+    func displayPath(appName: String) -> String {
+        switch self {
+        case .systemApplications: "/Applications/\(appName).app"
+        case .userApplications: "~/Applications/\(appName).app"
+        case .runningBundle: label
+        }
+    }
+}
+
 struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let name: String
@@ -165,6 +187,9 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
     /// Product-owned latest-version evidence. Ordinary fleet posture may use
     /// this value, but never a developer checkout, to advance a software target.
     let productVersionCheck: ProductVersionCheck?
+    /// Privacy-safe location class for an installed application. Raw home paths
+    /// never enter shared fleet state.
+    let installationLocation: ApplicationInstallationLocation?
     /// Developer-checkout evidence is legacy snapshot compatibility and
     /// explicit Doctor-preflight context. Drift evaluation ignores it for
     /// software, and routine scans do not collect or publish it.
@@ -188,6 +213,7 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
         build: String? = nil,
         installedRevision: String? = nil,
         productVersionCheck: ProductVersionCheck? = nil,
+        installationLocation: ApplicationInstallationLocation? = nil,
         sourceVersion: String? = nil,
         sourceRevision: String? = nil,
         sourceBranch: String? = nil,
@@ -207,6 +233,7 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
         self.build = build
         self.installedRevision = installedRevision
         self.productVersionCheck = productVersionCheck
+        self.installationLocation = installationLocation
         self.sourceVersion = sourceVersion
         self.sourceRevision = sourceRevision
         self.sourceBranch = sourceBranch
@@ -237,6 +264,7 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
                 build: build,
                 installedRevision: installedRevision,
                 productVersionCheck: productVersionCheck,
+                installationLocation: installationLocation,
                 sourceVersion: sourceVersion,
                 sourceRevision: sourceRevision,
                 sourceTree: sourceTree,
@@ -256,6 +284,7 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
             build: build,
             installedRevision: installedRevision,
             productVersionCheck: productVersionCheck,
+            installationLocation: installationLocation,
             configurationFingerprint: configurationFingerprint,
             items: items,
             isRunning: isRunning,
@@ -280,6 +309,7 @@ struct ComponentObservation: Codable, Identifiable, Hashable, Sendable {
             build: build,
             installedRevision: installedRevision,
             productVersionCheck: productVersionCheck,
+            installationLocation: installationLocation,
             sourceVersion: version,
             sourceRevision: revision,
             sourceBranch: branch,

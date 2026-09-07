@@ -12,6 +12,7 @@ struct DynamoDBFleetItemTests {
             kind: .application,
             status: .installed,
             installedVersion: "1.0.0",
+            installationLocation: .runningBundle,
             sourceRevision: "aaaaaaaaaaaa",
             sourceBranch: "feat/private-checkout",
             sourceDirty: true,
@@ -64,6 +65,8 @@ struct DynamoDBFleetItemTests {
         let decoded = try DynamoDBFleetItemCodec.decodeDevice(deviceItem)
         #expect(decoded.machineID == snapshot.machineID)
         #expect(decoded.component("example-app")?.installedVersion == "1.0.0")
+        #expect(decoded.component("example-app")?.installationLocation == .runningBundle)
+        #expect(!deviceItem.payloadJSON.contains("/Users/"))
         #expect(decoded.component("example-app")?.sourceRevision == nil)
         #expect(decoded.component("example-config")?.sourceRevision == "bbbbbbbbbbbb")
         #expect(decoded.component("example-config")?.sourceBranch == nil)

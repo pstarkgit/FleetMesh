@@ -1997,6 +1997,25 @@ private struct DoctorFindingRow: View {
                 }
             }
 
+            evidencePanel
+
+            if finding.disposition == .manual, !finding.needsBaselineDecision {
+                HStack(spacing: 8) {
+                    if let actionURL = finding.actionURL,
+                       let actionLabel = finding.actionLabel {
+                        Link(destination: actionURL) {
+                            Label(actionLabel, systemImage: "arrow.up.right.square")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(DSTheme.blue)
+                    }
+                    Button("Scan again", action: onScanAgain)
+                        .buttonStyle(.bordered)
+                        .disabled(doctorBusy || !isLocalMachine)
+                        .accessibilityIdentifier("doctor.scanAgain.\(finding.id)")
+                }
+            }
+
             if finding.needsCheckoutResolution {
                 VStack(alignment: .leading, spacing: 9) {
                     Text("Recommended resolution")
@@ -2113,6 +2132,52 @@ private struct DoctorFindingRow: View {
         .onChange(of: run?.finishedAt) { _, _ in
             if run?.outcome == .failed { showOutput = true }
         }
+    }
+
+    private var evidencePanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            evidenceRow(
+                label: "Installed bundle",
+                value: observation?.installationLocation?.displayPath(
+                    appName: observation?.name ?? finding.drift.name
+                ) ?? (observation?.status == .missing ? "Not located" : "Location unavailable")
+            )
+            evidenceRow(
+                label: "Installed version",
+                value: observation?.installedVersion ?? "Not observed"
+            )
+            if let check = observation?.productVersionCheck {
+                evidenceRow(
+                    label: check.authority.label,
+                    value: check.latestVersion ?? "Unavailable"
+                )
+            }
+            if let isRunning = observation?.isRunning {
+                evidenceRow(label: "Runtime", value: isRunning ? "Running" : "Not running")
+            }
+            if let recipe = finding.recipe {
+                evidenceRow(
+                    label: "Developer source installer",
+                    value: recipe.displayCommand
+                )
+            }
+        }
+        .padding(10)
+        .background(DSTheme.canvas)
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+
+    private func evidenceRow(label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(label)
+                .foregroundStyle(DSTheme.inkMuted)
+                .frame(width: 150, alignment: .leading)
+            Text(value)
+                .foregroundStyle(DSTheme.inkSoft)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 10, design: .monospaced))
     }
 
     private var dispositionColor: Color {

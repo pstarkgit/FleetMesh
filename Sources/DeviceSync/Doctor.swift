@@ -21,6 +21,26 @@ struct DoctorFinding: Identifiable, Hashable, Sendable {
     let title: String
     let detail: String
     let recipe: DoctorRecipe?
+    let actionLabel: String?
+    let actionURL: URL?
+
+    init(
+        drift: ComponentDrift,
+        disposition: DoctorDisposition,
+        title: String,
+        detail: String,
+        recipe: DoctorRecipe?,
+        actionLabel: String? = nil,
+        actionURL: URL? = nil
+    ) {
+        self.drift = drift
+        self.disposition = disposition
+        self.title = title
+        self.detail = detail
+        self.recipe = recipe
+        self.actionLabel = actionLabel
+        self.actionURL = actionURL
+    }
 
     var id: String { drift.componentID }
     var canRepair: Bool { disposition == .repairable && recipe != nil }
@@ -155,6 +175,22 @@ struct DoctorActionDefinition: Sendable {
     let title: String
     let detail: String
     let recipe: DoctorRecipe?
+    let actionLabel: String?
+    let actionURL: URL?
+
+    init(
+        title: String,
+        detail: String,
+        recipe: DoctorRecipe?,
+        actionLabel: String? = nil,
+        actionURL: URL? = nil
+    ) {
+        self.title = title
+        self.detail = detail
+        self.recipe = recipe
+        self.actionLabel = actionLabel
+        self.actionURL = actionURL
+    }
 }
 
 enum DoctorCatalog {
@@ -191,13 +227,11 @@ enum DoctorCatalog {
             )
         ),
         "murmr-voice": DoctorActionDefinition(
-            title: "Deploy the clean Murmr Voice checkout",
-            detail: "Use Murmr Voice's installer, then re-scan its signed app, revision, and running state.",
-            recipe: DoctorRecipe(
-                componentID: "murmr-voice",
-                homeRelativeExecutable: "code/Murmur/install.sh",
-                homeRelativeWorkingDirectory: "code/Murmur"
-            )
+            title: "Use Murmr Voice's signed product release",
+            detail: "FleetMesh compares the signed installed bundle with Murmr Voice's signed Sparkle feed. If the app is missing, install it from Murmr Labs; if it is older, use Murmr Voice's built-in Check for Updates. ~/code/Murmur is developer source, not the product installation path.",
+            recipe: nil,
+            actionLabel: "Open Murmr Voice download",
+            actionURL: URL(string: "https://murmrlabs.ai")!
         ),
         "model-bridge": DoctorActionDefinition(
             title: "Deploy the clean Model Bridge checkout",
@@ -301,9 +335,24 @@ struct DoctorPlanner: Sendable {
         enforceSourcePreflight: Bool = false
     ) -> DoctorFinding {
         let definition = DoctorCatalog.definition(for: drift.componentID)
+        let requiresCleanSource = enforceSourcePreflight
+            && definition?.recipe?.requiresCleanSource == true
+
+        if observation?.status == .missing,
+           observation?.isRunning == true {
+            return DoctorFinding(
+                drift: drift,
+                disposition: .manual,
+                title: "Refresh the running \(drift.name) bundle location",
+                detail: "FleetMesh sees the process running but the prior report did not locate its signed app bundle. Scan again to recover the running bundle path and version before choosing any installation action. No repair command is selected from conflicting evidence.",
+                recipe: nil,
+                actionLabel: definition?.actionLabel,
+                actionURL: definition?.actionURL
+            )
+        }
 
         if observation?.sourceDirty == true,
-           enforceSourcePreflight || drift.kind == .configuration || drift.kind == .theme {
+           requiresCleanSource || drift.kind == .configuration || drift.kind == .theme {
             return DoctorFinding(
                 drift: drift,
                 disposition: .protected,
@@ -337,7 +386,7 @@ struct DoctorPlanner: Sendable {
             )
         }
 
-        if enforceSourcePreflight,
+        if requiresCleanSource,
            let installed = observation?.installedVersion,
            let source = observation?.sourceVersion,
            VersionIdentity.compare(source, installed) == .orderedAscending {
@@ -356,11 +405,13 @@ struct DoctorPlanner: Sendable {
                 disposition: .manual,
                 title: definition?.title ?? "Review \(drift.name)",
                 detail: definition?.detail ?? "This item needs an explicit operator decision before it can be changed.",
-                recipe: nil
+                recipe: nil,
+                actionLabel: definition?.actionLabel,
+                actionURL: definition?.actionURL
             )
         }
 
-        if enforceSourcePreflight, recipe.requiresCleanSource {
+        if requiresCleanSource {
             guard observation?.sourceDirty == false,
                   observation?.sourceRevision != nil else {
                 return DoctorFinding(

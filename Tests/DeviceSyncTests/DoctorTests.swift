@@ -193,38 +193,38 @@ struct DoctorPlannerTests {
     @Test
     func inlinePolicyRoutesEachFindingToOnlyItsSafeAction() {
         let repairObservation = ComponentObservation(
-            id: "murmr-voice",
-            name: "Murmr Voice",
+            id: "authbar",
+            name: "AuthBar",
             kind: .application,
             status: .installed,
-            installedVersion: "0.2.35",
+            installedVersion: "0.11.3",
             installedRevision: "aaaaaaaaaaaa",
-            sourceVersion: "0.2.36",
+            sourceVersion: "0.11.4",
             sourceRevision: "bbbbbbbbbbbb",
             sourceDirty: false,
             evidence: "Installed/source divergence"
         )
         let repairDrift = ComponentDrift(
-            componentID: "murmr-voice",
-            name: "Murmr Voice",
+            componentID: "authbar",
+            name: "AuthBar",
             kind: .application,
             state: .different,
             severity: .attention,
             summary: "Installed version is behind",
-            expected: "0.2.36",
-            observed: "0.2.35"
+            expected: "0.11.4",
+            observed: "0.11.3"
         )
         let repairFinding = DoctorPlanner().finding(
             for: repairDrift,
             observation: repairObservation,
             target: ManifestTarget(observation: ComponentObservation(
-                id: "murmr-voice",
-                name: "Murmr Voice",
+                id: "authbar",
+                name: "AuthBar",
                 kind: .application,
                 status: .installed,
-                installedVersion: "0.2.36",
+                installedVersion: "0.11.4",
                 installedRevision: "bbbbbbbbbbbb",
-                sourceVersion: "0.2.36",
+                sourceVersion: "0.11.4",
                 sourceRevision: "bbbbbbbbbbbb",
                 sourceDirty: false,
                 evidence: "Target"
@@ -426,7 +426,7 @@ struct DoctorPlannerTests {
     }
 
     @Test
-    func olderCleanCheckoutCannotDowngradeNewerInstalledSoftware() {
+    func murmrProductReleaseIgnoresOlderDeveloperCheckout() {
         let observation = ComponentObservation(
             id: "murmr-voice",
             name: "Murmr Voice",
@@ -457,15 +457,66 @@ struct DoctorPlannerTests {
             enforceSourcePreflight: true
         )
 
-        #expect(finding.disposition == .protected)
+        #expect(finding.disposition == .manual)
         #expect(!finding.canRepair)
-        #expect(finding.title.contains("Update"))
-        #expect(finding.detail.contains("will not run an installer that could downgrade"))
+        #expect(finding.recipe == nil)
+        #expect(finding.title.contains("signed product release"))
+        #expect(finding.detail.contains("developer source"))
+        #expect(finding.actionLabel == "Open Murmr Voice download")
+        #expect(finding.actionURL?.host == "murmrlabs.ai")
         #expect(InlineRemediationPolicy.action(
             drift: drift,
             observation: observation,
             finding: finding
         ) == .none)
+    }
+
+    @Test
+    func runningMurmrWithMissingBundleEvidenceRequiresRescanNotRepair() {
+        let observation = ComponentObservation(
+            id: "murmr-voice",
+            name: "Murmr Voice",
+            kind: .application,
+            status: .missing,
+            productVersionCheck: .verified(
+                version: "0.2.36",
+                authority: .sparkleAppcast
+            ),
+            isRunning: true,
+            evidence: "No matching application bundle was found."
+        )
+        let drift = ComponentDrift(
+            componentID: observation.id,
+            name: observation.name,
+            kind: observation.kind,
+            state: .missing,
+            severity: .critical,
+            summary: "Required component is not installed or configured.",
+            expected: "0.2.36",
+            observed: "Missing",
+            targetBasis: .latestRelease
+        )
+
+        let finding = DoctorPlanner().finding(
+            for: drift,
+            observation: observation,
+            target: ManifestTarget(observation: ComponentObservation(
+                id: observation.id,
+                name: observation.name,
+                kind: observation.kind,
+                status: .installed,
+                installedVersion: "0.2.36",
+                evidence: "Target"
+            )),
+            enforceSourcePreflight: true
+        )
+
+        #expect(finding.disposition == .manual)
+        #expect(!finding.canRepair)
+        #expect(finding.recipe == nil)
+        #expect(finding.title.contains("Refresh"))
+        #expect(finding.detail.contains("process running"))
+        #expect(finding.actionURL?.host == "murmrlabs.ai")
     }
 
     @Test

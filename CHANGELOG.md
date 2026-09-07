@@ -1,3 +1,22 @@
+## 0.1.18 — 2026-09-06
+
+- Recovered matching application bundles from running executable paths when an
+  app lives outside direct `/Applications` or `~/Applications` indexing, fixing
+  contradictory **Missing + Running** evidence on Obsidian.
+- Added privacy-safe installed bundle location classes and surfaced installed
+  path, installed version, product-feed version, runtime state, and developer
+  source installer as separate Doctor evidence.
+- Stopped routing Murmr Voice drift to `~/code/Murmur/install.sh`. Murmr's own
+  product contract makes the signed/notarized download and built-in Sparkle
+  updater authoritative; its source installer is developer-only.
+- Treat Missing + Running as an evidence conflict that requires a fresh scan,
+  never as authorization to install software.
+- Scoped checkout cleanliness and source-version gates only to Doctor recipes
+  that actually execute a source checkout, so unrelated developer state cannot
+  block product-distribution guidance.
+- Kept macOS Accessibility permission attention owned by Murmr Voice; FleetMesh
+  neither mistakes it for version drift nor attempts to bypass TCC.
+
 ## 0.1.17 — 2026-09-06
 
 - Added an explicit **Move this Mac** path when an invitation targets a different

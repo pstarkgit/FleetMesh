@@ -371,6 +371,12 @@ struct InventoryService: Sendable {
     private struct CaptureContext: Sendable {
         let applicationDiscovery: ApplicationDiscovery
         let runningProcessNames: Set<String>?
+        let runningApplicationBundles: [String: [URL]]
+    }
+
+    struct RunningProcessInventory: Sendable {
+        let names: Set<String>
+        let applicationBundles: [String: [URL]]
     }
 
     private struct ApplicationDiscovery: Sendable {
@@ -384,23 +390,59 @@ struct InventoryService: Sendable {
         }.value
         async let processes = commandRunner.run(
             executable: URL(fileURLWithPath: "/bin/ps"),
-            arguments: ["-axo", "ucomm="],
+            arguments: ["-axo", "ucomm=,comm="],
             environment: nil,
             timeout: 5
         )
         let (applicationIndex, processResult) = await (applications, processes)
-        let runningNames: Set<String>?
+        let processInventory: RunningProcessInventory?
         if processResult.exitCode == 0, !processResult.timedOut {
-            runningNames = Set(processResult.standardOutput.split(separator: "\n").map {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines)
-            })
+            processInventory = Self.parseRunningProcesses(processResult.standardOutput)
         } else {
-            runningNames = nil
+            processInventory = nil
         }
         return CaptureContext(
             applicationDiscovery: applicationIndex,
-            runningProcessNames: runningNames
+            runningProcessNames: processInventory?.names,
+            runningApplicationBundles: processInventory?.applicationBundles ?? [:]
         )
+    }
+
+    static func parseRunningProcesses(_ output: String) -> RunningProcessInventory {
+        var names: Set<String> = []
+        var bundles: [String: [URL]] = [:]
+        for rawLine in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let fields = rawLine.split(
+                maxSplits: 1,
+                omittingEmptySubsequences: true,
+                whereSeparator: { $0.isWhitespace }
+            )
+            guard let rawName = fields.first else { continue }
+            let name = String(rawName)
+            names.insert(name)
+            guard fields.count == 2,
+                  let bundleURL = appBundleURL(
+                    executablePath: String(fields[1]).trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                  ) else { continue }
+            var candidates = bundles[name, default: []]
+            if !candidates.contains(bundleURL) {
+                candidates.append(bundleURL)
+            }
+            bundles[name] = candidates
+        }
+        return RunningProcessInventory(names: names, applicationBundles: bundles)
+    }
+
+    static func appBundleURL(executablePath: String) -> URL? {
+        guard let marker = executablePath.range(
+            of: ".app/Contents/MacOS/",
+            options: .caseInsensitive
+        ) else { return nil }
+        let bundlePath = String(executablePath[..<marker.lowerBound]) + ".app"
+        guard bundlePath.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: bundlePath).standardizedFileURL
     }
 
     private static func applicationIndex(homeURL: URL) -> ApplicationDiscovery {
@@ -576,7 +618,8 @@ struct InventoryService: Sendable {
     ) async -> ComponentObservation {
         let appURL = locateApplication(
             definition,
-            applicationsByBundleID: context.applicationDiscovery.applicationsByBundleID
+            applicationsByBundleID: context.applicationDiscovery.applicationsByBundleID,
+            runningApplicationBundles: context.runningApplicationBundles
         )
         async let productVersionCheck = probeProductVersion(definition.productVersionProbe)
         let isRunning = context.runningProcessNames.map { runningNames in
@@ -624,6 +667,7 @@ struct InventoryService: Sendable {
             info[$0] as? String
         }.first { !$0.isEmpty }
         let managedVersion = await probeManagedVersion(definition.managedVersionProbe)
+        let location = installationLocation(for: appURL)
 
         return ComponentObservation(
             id: definition.id,
@@ -635,18 +679,33 @@ struct InventoryService: Sendable {
             build: info["CFBundleVersion"] as? String,
             installedRevision: installedCommit,
             productVersionCheck: await productVersionCheck,
+            installationLocation: location,
             isRunning: isRunning,
-            evidence: Self.applicationEvidence(managedVersion: managedVersion)
+            evidence: Self.applicationEvidence(
+                managedVersion: managedVersion,
+                installationLocation: location
+            )
         )
     }
 
     /// Shared observations describe how version evidence was obtained without
     /// publishing a bundle identifier. Developer namespaces can contain a
     /// username and are not needed for fleet drift evaluation.
-    static func applicationEvidence(managedVersion: String?) -> String {
-        managedVersion == nil
-            ? "Installed application; version read from its signed Info.plist."
-            : "Installed application; version returned by its managed executable."
+    static func applicationEvidence(
+        managedVersion: String?,
+        installationLocation: ApplicationInstallationLocation? = nil
+    ) -> String {
+        let versionEvidence = managedVersion == nil
+            ? "version read from its signed Info.plist"
+            : "version returned by its managed executable"
+        switch installationLocation {
+        case .runningBundle:
+            return "Installed application discovered from its matching running bundle; \(versionEvidence)."
+        case .systemApplications, .userApplications:
+            return "Installed application; \(versionEvidence)."
+        case nil:
+            return "Installed application; \(versionEvidence)."
+        }
     }
 
     private func probeManagedVersion(
@@ -890,9 +949,10 @@ struct InventoryService: Sendable {
         )
     }
 
-    private func locateApplication(
+    func locateApplication(
         _ definition: AppProbeDefinition,
-        applicationsByBundleID: [String: URL]
+        applicationsByBundleID: [String: URL],
+        runningApplicationBundles: [String: [URL]]
     ) -> URL? {
         for path in definition.preferredPaths {
             let url = expandedURL(path)
@@ -902,7 +962,32 @@ struct InventoryService: Sendable {
         for identifier in definition.bundleIdentifiers {
             if let indexed = applicationsByBundleID[identifier] { return indexed }
         }
+
+        for processName in definition.processNames {
+            for candidate in runningApplicationBundles[processName] ?? [] {
+                guard fileManager.fileExists(atPath: candidate.path),
+                      let bundle = Bundle(url: candidate),
+                      let identifier = bundle.bundleIdentifier,
+                      definition.bundleIdentifiers.contains(identifier),
+                      bundle.infoDictionary != nil else { continue }
+                return candidate
+            }
+        }
         return nil
+    }
+
+    func installationLocation(for appURL: URL) -> ApplicationInstallationLocation {
+        let path = appURL.standardizedFileURL.path
+        if path.hasPrefix("/Applications/") {
+            return .systemApplications
+        }
+        let userApplications = homeURL
+            .appendingPathComponent("Applications", isDirectory: true)
+            .standardizedFileURL.path + "/"
+        if path.hasPrefix(userApplications) {
+            return .userApplications
+        }
+        return .runningBundle
     }
 
     private struct SourceState: Sendable {
