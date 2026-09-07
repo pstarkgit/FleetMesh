@@ -148,10 +148,23 @@ mode only after an exact match.
 
 On a new Mac:
 
-1. Configure the same local AWS profile, Region, table, and fleet ID.
-2. Refresh FleetMesh and review the redacted evidence and inherited defaults.
-3. Choose **Join this Mac** and confirm its device role.
-4. Continue to Bootstrap to review any required installations or updates.
+1. On an enrolled controller, open **Devices → Invite Mac** and save the
+   credential-free `.fleetmesh` invitation.
+2. Install FleetMesh on the new Mac and open the invitation, or choose
+   **Join with invitation…** in the automatically presented first-run wizard.
+3. Confirm the local least-privilege reporter profile and machine name, then
+   choose **Connect this Mac**. FleetMesh imports only non-secret selectors,
+   validates the profile through the normal AWS provider chain, reads the
+   existing manifest, and publishes redacted evidence as Pending.
+4. Back on the controller, open **Devices**, review the Pending report, choose
+   the device role, and approve **Add to fleet**.
+5. Refresh the new Mac and continue to Bootstrap for any required installations
+   or updates.
+
+The invitation contains no credentials, account ID, controller profile, machine
+identity, SSH endpoint, cache path, or manifest. Do not copy `local-state.json`
+between Macs. An invitation configures connection metadata but grants no AWS
+access; temporary reporter credentials must already resolve locally.
 
 FleetMesh never creates or replaces a baseline during an ordinary scan. If the
 manifest is missing or unreadable, it reports the authority failure and waits.

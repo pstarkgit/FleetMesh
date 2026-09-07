@@ -62,6 +62,22 @@ servers, and cloud desktops:
   files
 - component policy: Inherit, Required, or Excluded per device
 
+### New Mac enrollment
+
+A controller may export a schema-versioned `.fleetmesh` invitation containing
+only non-secret DynamoDB selectors, a reporter-profile hint, creation time, and
+a suggested role. The artifact is configuration, not authorization: it carries
+no credential, token, account ID, machine ID, endpoint, cache path, manifest, or
+controller profile.
+
+The new Mac imports the invitation atomically into local state while preserving
+its independently generated machine ID. FleetMesh then uses the normal profile
+resolver and refresh path. It must read an existing manifest before it can
+publish a redacted report, and that report remains Pending. Only an already
+enrolled controller can mutate the manifest to approve membership and role. An
+invitation can never create or replace a baseline, enroll its recipient, or run
+Bootstrap or Doctor actions.
+
 Applicability is evaluated before drift. A Mac-only target inherited by a Linux
 server is not a failure; it is not applicable. A missing required shell/config
 target on that Linux server is drift.

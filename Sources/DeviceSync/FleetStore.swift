@@ -147,6 +147,17 @@ final class FleetStore {
 
     var needsFleetConnection: Bool { manifest == nil }
 
+    var shouldOfferEnrollmentWizard: Bool {
+        hasStarted
+            && localState != nil
+            && manifest == nil
+            && localState?.effectiveStorageBackend == .json
+    }
+
+    var canCreateEnrollmentInvitation: Bool {
+        manifest != nil && localState?.effectiveStorageBackend == .dynamodb
+    }
+
     var enrolledDevices: [FleetDeviceItem] {
         devices.filter { $0.status == .enrolled }
     }
@@ -434,6 +445,45 @@ final class FleetStore {
         }
     }
 
+    func makeEnrollmentInvitation() throws -> FleetEnrollmentInvitation {
+        guard canCreateEnrollmentInvitation, let localState else {
+            throw FleetStoreError.enrollmentInvitationUnavailable
+        }
+        return try FleetEnrollmentInvitation.make(from: localState)
+    }
+
+    func applyEnrollmentInvitation(
+        _ invitation: FleetEnrollmentInvitation,
+        profile: String,
+        displayName: String?
+    ) async {
+        guard !isBusy else { return }
+        if manifest != nil, localDevice?.status == .enrolled {
+            lastError = FleetStoreError.alreadyConnectedToFleet.localizedDescription
+            lastActionMessage = nil
+            return
+        }
+
+        isUpdatingScope = true
+        lastError = nil
+        lastActionMessage = nil
+        do {
+            localState = try localRepository.applyingEnrollmentInvitation(
+                invitation,
+                profile: profile,
+                displayName: displayName
+            )
+            isUpdatingScope = false
+            await refresh()
+            if lastError == nil, manifest != nil, localDevice?.status == .pending {
+                lastActionMessage = "This Mac published fresh evidence and is Pending. Approve it from an existing FleetMesh controller."
+            }
+        } catch {
+            isUpdatingScope = false
+            lastError = error.localizedDescription
+            lastActionMessage = nil
+        }
+    }
 
     func updateStorage(
         backend: FleetStorageBackend,
@@ -1380,6 +1430,8 @@ private enum FleetStoreError: LocalizedError {
     case fleetConnectionLost
     case localRoleRollbackFailed(change: String, rollback: String)
     case freshObservationUnavailable(String)
+    case enrollmentInvitationUnavailable
+    case alreadyConnectedToFleet
 
     var errorDescription: String? {
         switch self {
@@ -1401,6 +1453,10 @@ private enum FleetStoreError: LocalizedError {
             "The fleet policy change failed (\(change)), and FleetMesh could not restore the controller's previous device role (\(rollback)). Reopen FleetMesh and reconcile the role before checking in this device again."
         case .freshObservationUnavailable(let componentID):
             "A fresh clean observation for \(componentID) was unavailable, so FleetMesh did not change the baseline."
+        case .enrollmentInvitationUnavailable:
+            "Connect and verify DynamoDB authority before creating a new Mac invitation."
+        case .alreadyConnectedToFleet:
+            "This Mac is already enrolled in a fleet. FleetMesh did not replace its authority or identity."
         }
     }
 }

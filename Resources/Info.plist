@@ -30,6 +30,41 @@
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>dev.starkpat.fleetmesh.invitation</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.json</string>
+            </array>
+            <key>UTTypeDescription</key>
+            <string>FleetMesh Enrollment Invitation</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>fleetmesh</string>
+                </array>
+                <key>public.mime-type</key>
+                <string>application/vnd.starkpat.fleetmesh-invitation+json</string>
+            </dict>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>FleetMesh Enrollment Invitation</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>dev.starkpat.fleetmesh.invitation</string>
+            </array>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+        </dict>
+    </array>
     <key>DSCommit</key>
     <string></string>
     <key>DSBuildDate</key>

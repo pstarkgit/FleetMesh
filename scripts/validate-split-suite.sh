@@ -39,6 +39,6 @@ for suite in "${isolated_suites[@]}"; do
   run_suite_individually "$suite"
 done
 
-run_group 'DoctorPlannerTests|DriftEngineTests|MenuBarSummaryTests|BootstrapPlannerTests|FleetMeshIdentityTests|HeadlessFleetReportTests|ProductVersionTargetResolverTests'
+run_group 'DoctorPlannerTests|DriftEngineTests|MenuBarSummaryTests|BootstrapPlannerTests|FleetMeshIdentityTests|HeadlessFleetReportTests|FleetEnrollmentInvitationTests|ProductVersionTargetResolverTests'
 
 echo "FleetMesh split suite passed with ${#isolated_suites[@]} isolated suites"
