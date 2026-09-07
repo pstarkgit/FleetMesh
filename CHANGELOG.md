@@ -1,3 +1,22 @@
+## 0.1.16 — 2026-09-06
+
+- Added controller-side export of a credential-free `.fleetmesh` invitation for
+  onboarding a new Mac without copying local state or manually retyping cloud
+  selectors.
+- Added an auto-presented first-run **Join existing fleet** wizard with Finder
+  file-open support, editable reporter profile and machine name, selector
+  review, progress, and a clear Pending-approval finish state.
+- Kept invitations non-authorizing: they contain only Region, table, fleet ID,
+  reporter profile hint, creation time, and suggested role. They contain no
+  credentials, tokens, account ID, machine ID, cache path, SSH endpoint,
+  manifest, or controller profile.
+- Applied imported selectors atomically while preserving the new Mac's unique
+  identity and private local state. Normal refresh must read an existing
+  manifest before publishing redacted evidence; the new Mac cannot enroll
+  itself or replace fleet authority.
+- Split Devices onboarding into **Invite Mac** and guarded **Add Linux** paths,
+  while preserving the fixed bounded read-only SSH boundary for Linux.
+
 ## 0.1.15 — 2026-09-06
 
 - Made `--check` report fleet-wide attention totals and deterministic per-device

@@ -1,9 +1,11 @@
 import SwiftUI
 
 struct RootView: View {
+    @Bindable var appState: DeviceSyncAppState
     @Bindable var store: FleetStore
     @Bindable var navigation: AppNavigation
     @Bindable var appearance: FleetMeshAppearanceStore
+    @State private var showEnrollmentWizard = false
 
     var body: some View {
         NavigationSplitView {
@@ -17,7 +19,8 @@ struct RootView: View {
                         store: store,
                         onOpenDoctor: { navigation.open(.doctor) },
                         onOpenBootstrap: { navigation.open(.bootstrap) },
-                        onOpenSettings: { navigation.open(.settings) }
+                        onOpenSettings: { navigation.open(.settings) },
+                        onOpenEnrollmentWizard: { showEnrollmentWizard = true }
                     )
                 case .devices:
                     DevicesView(store: store)
@@ -33,6 +36,32 @@ struct RootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .tint(DSTheme.blue)
+        .sheet(isPresented: $showEnrollmentWizard, onDismiss: {
+            appState.consumeEnrollmentInvitationURL()
+        }) {
+            FleetEnrollmentWizardView(
+                store: store,
+                isPresented: $showEnrollmentWizard,
+                initialInvitationURL: appState.pendingEnrollmentInvitationURL,
+                onInvitationConsumed: { appState.consumeEnrollmentInvitationURL() }
+            )
+        }
+        .onAppear {
+            if store.shouldOfferEnrollmentWizard
+                || appState.pendingEnrollmentInvitationURL != nil {
+                showEnrollmentWizard = true
+            }
+        }
+        .onChange(of: store.shouldOfferEnrollmentWizard) { _, shouldOffer in
+            if shouldOffer {
+                showEnrollmentWizard = true
+            }
+        }
+        .onChange(of: appState.pendingEnrollmentInvitationURL) { _, url in
+            if url != nil {
+                showEnrollmentWizard = true
+            }
+        }
     }
 
     private var sidebar: some View {
@@ -193,6 +222,7 @@ private struct MachineSidebarRow: View {
 struct DevicesView: View {
     @Bindable var store: FleetStore
     @State private var showAddDevice = false
+    @State private var showMacInvitation = false
     @State private var pendingMembership: PendingDeviceMembership?
 
     var body: some View {
@@ -232,6 +262,12 @@ struct DevicesView: View {
         .accessibilityIdentifier("devicesync.devices")
         .sheet(isPresented: $showAddDevice) {
             AddDeviceSheet(store: store, isPresented: $showAddDevice)
+        }
+        .sheet(isPresented: $showMacInvitation) {
+            MacEnrollmentInvitationSheet(
+                store: store,
+                isPresented: $showMacInvitation
+            )
         }
         .confirmationDialog(
             membershipTitle,
@@ -277,14 +313,25 @@ struct DevicesView: View {
                     .foregroundStyle(DSTheme.inkSoft)
             }
             Spacer()
-            Button {
-                showAddDevice = true
-            } label: {
-                Label("Add device", systemImage: "plus")
+            HStack(spacing: 8) {
+                Button {
+                    showMacInvitation = true
+                } label: {
+                    Label("Invite Mac", systemImage: "laptopcomputer.and.arrow.down")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.isBusy || !store.canCreateEnrollmentInvitation)
+                .accessibilityIdentifier("fleetmesh.device.inviteMac")
+
+                Button {
+                    showAddDevice = true
+                } label: {
+                    Label("Add Linux", systemImage: "server.rack")
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.isBusy || store.manifest == nil)
+                .accessibilityIdentifier("devicesync.device.add")
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(store.isBusy || store.manifest == nil)
-            .accessibilityIdentifier("devicesync.device.add")
         }
     }
 
@@ -819,6 +866,7 @@ struct FleetView: View {
     let onOpenDoctor: () -> Void
     let onOpenBootstrap: () -> Void
     let onOpenSettings: () -> Void
+    let onOpenEnrollmentWizard: () -> Void
     @State private var joinRole: DeviceRole = .workstation
     @State private var confirmJoin = false
     @State private var expandedComponentID: String?
@@ -948,6 +996,14 @@ struct FleetView: View {
 
             VStack(alignment: .trailing, spacing: 10) {
                 if store.needsFleetConnection {
+                    Button {
+                        onOpenEnrollmentWizard()
+                    } label: {
+                        Label("Join with invitation…", systemImage: "doc.badge.plus")
+                            .frame(minWidth: 180)
+                    }
+                    .buttonStyle(.borderedProminent)
+
                     if store.localState?.effectiveStorageBackend == .json {
                         if store.detectedExistingFleetURL != nil {
                             Button {

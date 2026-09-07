@@ -22,6 +22,7 @@ struct DeviceSyncApp: App {
     var body: some Scene {
         Window(FleetMeshIdentity.productName, id: DeviceSyncWindow.main) {
             RootView(
+                appState: appState,
                 store: appState.store,
                 navigation: appState.navigation,
                 appearance: appearance
@@ -335,6 +336,7 @@ final class DeviceSyncAppState {
     let store: FleetStore
     let navigation: AppNavigation
     let appearance: FleetMeshAppearanceStore
+    private(set) var pendingEnrollmentInvitationURL: URL? = nil
 
     private var statusItemController: DeviceSyncStatusItemController?
     private var openMainWindow: (() -> Void)?
@@ -365,6 +367,17 @@ final class DeviceSyncAppState {
         bringMainWindowForward(attemptsRemaining: 12)
     }
 
+    func openEnrollmentInvitation(_ url: URL) {
+        guard url.pathExtension.caseInsensitiveCompare("fleetmesh") == .orderedSame
+                || url.pathExtension.caseInsensitiveCompare("json") == .orderedSame else { return }
+        pendingEnrollmentInvitationURL = url
+        show(.fleet)
+    }
+
+    func consumeEnrollmentInvitationURL() {
+        pendingEnrollmentInvitationURL = nil
+    }
+
     private func bringMainWindowForward(attemptsRemaining: Int) {
         guard attemptsRemaining > 0 else { return }
         if let window = NSApp.windows.first(where: {
@@ -385,6 +398,17 @@ final class DeviceSyncAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DeviceSyncAppState.shared.appearance.apply()
         DeviceSyncAppState.shared.installStatusItem()
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        guard let filename = filenames.first else {
+            sender.reply(toOpenOrPrint: .failure)
+            return
+        }
+        DeviceSyncAppState.shared.openEnrollmentInvitation(
+            URL(fileURLWithPath: filename)
+        )
+        sender.reply(toOpenOrPrint: .success)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

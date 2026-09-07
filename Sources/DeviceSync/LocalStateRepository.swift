@@ -213,6 +213,28 @@ struct LocalStateRepository: Sendable {
         return state
     }
 
+    func applyingEnrollmentInvitation(
+        _ invitation: FleetEnrollmentInvitation,
+        profile: String,
+        displayName: String?
+    ) throws -> LocalDeviceState {
+        let invitation = try invitation.validated()
+        var state = try loadOrCreate()
+        state.storageBackend = .dynamodb
+        state.awsProfile = profile.trimmingCharacters(in: .whitespacesAndNewlines)
+        state.awsRegion = invitation.region
+        state.dynamoDBTable = invitation.table
+        state.fleetID = invitation.fleetID
+        state.cachePath = stateURL.deletingLastPathComponent()
+            .appendingPathComponent("dynamodb-cache", isDirectory: true)
+            .path
+        let normalizedName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        state.displayName = normalizedName?.isEmpty == false ? normalizedName : state.displayName
+        _ = try state.dynamoDBConfiguration()
+        try save(state)
+        return state
+    }
+
     func settingComponentHidden(
         componentID: String,
         hidden: Bool
