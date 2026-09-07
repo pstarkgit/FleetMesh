@@ -82,6 +82,18 @@ signed Sparkle appcast. Products without a machine-readable release check use th
 manifest's **Recorded minimum** conservatively. A failed product check is Unknown,
 not healthy.
 
+Application discovery checks `/Applications`, `~/Applications`, and matching
+running executable bundle paths. FleetMesh publishes only a privacy-safe location
+class, never a raw home path. A running process whose bundle was not located is
+an evidence conflict that requires another scan, not proof that installation is
+needed.
+
+Murmr Voice follows its own product distribution contract: the signed and
+notarized Murmr Labs download plus its built-in Sparkle updater. The
+`~/code/Murmur` checkout and `install.sh` are developer-only and are never offered
+as FleetMesh product repair. Murmr-owned Microphone or Accessibility attention is
+permission state, not software-version drift.
+
 Routine scans never inspect developer Git checkouts for software. Branch,
 revision, dirty worktrees, and installed/source commit equality cannot create
 fleet drift or redefine a version target. Checkout inspection occurs only after
