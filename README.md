@@ -31,6 +31,17 @@ checkouts offer review only. Software tracks the latest verified product or
 repository version automatically; an observed software version newer than an
 older recorded minimum is healthy and never requires manual promotion.
 
+Doctor's **Fix It** card groups every approved repair for the selected local Mac
+behind one confirmation. DDB contributes desired fingerprints and immutable
+source revisions only; it never supplies commands, repository URLs, or paths.
+FleetMesh maps stable component IDs to code-reviewed actions. Codex and Warp
+themes come from assets bundled in the signed app and must hash exactly to DDB
+before a staged, backed-up directory replacement. Harness Sync must have a clean
+checkout with the compiled-in approved origin, and its current commit must be an
+ancestor of DDB's target before FleetMesh permits a fast-forward and owner
+bootstrap. Every item is rescanned and published afterward; command success
+without aligned evidence remains attention, not success.
+
 ```mermaid
 flowchart LR
     DDB[DynamoDB control plane\nmanifest + device records] --> Repo[Storage-neutral repository]

@@ -44,7 +44,7 @@ struct FleetMeshUpdatesTests {
         )
         let entries = FleetMeshReleaseNotes.parse(markdown)
         #expect(entries.first?.version == DeviceSyncVersion.current)
-        #expect(entries.first?.version == "0.1.19")
+        #expect(entries.first?.version == "0.1.20")
     }
 
     @Test

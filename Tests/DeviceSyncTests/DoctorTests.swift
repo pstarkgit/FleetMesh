@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import DeviceSync
@@ -106,7 +107,7 @@ struct DoctorPlannerTests {
     }
 
     @Test
-    func cleanCommittedHarnessDriftRequiresBaselineDecisionNotBootstrap() {
+    func cleanCommittedHarnessDriftUsesPinnedFastForwardRepair() {
         let observation = ComponentObservation(
             id: "harness-sync",
             name: "Harness Sync",
@@ -145,17 +146,16 @@ struct DoctorPlannerTests {
             ))
         )
 
-        #expect(finding.disposition == .manual)
-        #expect(finding.needsBaselineDecision)
-        #expect(!finding.canRepair)
-        #expect(finding.recipe == nil)
-        #expect(finding.title.contains("committed"))
-        #expect(finding.detail.contains("bootstrap cannot resolve"))
+        #expect(finding.disposition == .repairable)
+        #expect(!finding.needsBaselineDecision)
+        #expect(finding.canRepair)
+        #expect(finding.recipe?.componentID == "harness-sync")
+        #expect(finding.repairDisplayAction?.contains("fast-forward") == true)
         #expect(InlineRemediationPolicy.action(
             drift: drift,
             observation: observation,
             finding: finding
-        ) == .useObservedBaseline)
+        ) == .repair)
     }
 
     @Test
@@ -520,6 +520,125 @@ struct DoctorPlannerTests {
     }
 
     @Test
+    func screenshotFindingsBecomeGuardedRepairs() {
+        let codexTarget = ComponentObservation(
+            id: "codex-themes",
+            name: "Codex themes",
+            kind: .theme,
+            status: .installed,
+            configurationFingerprint: "54267820be629711bbc7efd80558fa871e3dee434e86f54795736e503391e8ce",
+            items: ["UOpsOS.codex-theme.json"],
+            evidence: "Fleet target"
+        )
+        let missingCodex = ComponentObservation(
+            id: codexTarget.id,
+            name: codexTarget.name,
+            kind: codexTarget.kind,
+            status: .missing,
+            items: [],
+            evidence: "Not located"
+        )
+        let codexFinding = DoctorPlanner().finding(
+            for: ComponentDrift(
+                componentID: codexTarget.id,
+                name: codexTarget.name,
+                kind: codexTarget.kind,
+                state: .missing,
+                severity: .critical,
+                summary: "Required component is not installed or configured.",
+                expected: "54267820be62",
+                observed: "Missing",
+                targetBasis: .savedBaseline
+            ),
+            observation: missingCodex,
+            target: ManifestTarget(observation: codexTarget),
+            enforceSourcePreflight: true
+        )
+        #expect(codexFinding.disposition == .repairable)
+        #expect(codexFinding.canRepair)
+        #expect(codexFinding.repairDisplayAction?.contains("CodexThemes") == true)
+
+        let harnessTarget = ComponentObservation(
+            id: "harness-sync",
+            name: "Harness Sync",
+            kind: .configuration,
+            status: .installed,
+            sourceRevision: "611630839d541981727098c6b46e28e573aee59a",
+            sourceDirty: false,
+            configurationFingerprint: "611630839d541981727098c6b46e28e573aee59a",
+            evidence: "Fleet target"
+        )
+        let harnessObserved = ComponentObservation(
+            id: harnessTarget.id,
+            name: harnessTarget.name,
+            kind: harnessTarget.kind,
+            status: .installed,
+            sourceRevision: "34b9ad6861b80000000000000000000000000000",
+            sourceDirty: false,
+            configurationFingerprint: "34b9ad6861b80000000000000000000000000000",
+            evidence: "Clean older checkout"
+        )
+        let harnessFinding = DoctorPlanner().finding(
+            for: ComponentDrift(
+                componentID: harnessTarget.id,
+                name: harnessTarget.name,
+                kind: harnessTarget.kind,
+                state: .different,
+                severity: .attention,
+                summary: "Configuration differs.",
+                expected: "611630839d54",
+                observed: "34b9ad6861b8",
+                targetBasis: .savedBaseline
+            ),
+            observation: harnessObserved,
+            target: ManifestTarget(observation: harnessTarget),
+            enforceSourcePreflight: true
+        )
+        #expect(harnessFinding.disposition == .repairable)
+        #expect(harnessFinding.canRepair)
+        #expect(harnessFinding.recipe?.componentID == "harness-sync")
+        #expect(harnessFinding.repairDisplayAction?.contains("fast-forward") == true)
+
+        let warpTarget = ComponentObservation(
+            id: "warp-themes",
+            name: "Warp themes",
+            kind: .theme,
+            status: .installed,
+            configurationFingerprint: "3fcb59ec645d71c1f4b9e3d0dc25c9820122eb2f44db2de7fd90e5b3439cfbb8",
+            items: ["seashells-green.yaml", "seashells.yaml"],
+            evidence: "Fleet target"
+        )
+        let warpObserved = ComponentObservation(
+            id: warpTarget.id,
+            name: warpTarget.name,
+            kind: warpTarget.kind,
+            status: .installed,
+            configurationFingerprint: "08b9161b4c670000000000000000000000000000000000000000000000000000",
+            items: ["other.yaml"],
+            evidence: "Different local themes"
+        )
+        let warpFinding = DoctorPlanner().finding(
+            for: ComponentDrift(
+                componentID: warpTarget.id,
+                name: warpTarget.name,
+                kind: warpTarget.kind,
+                state: .different,
+                severity: .attention,
+                summary: "Theme set differs.",
+                expected: "3fcb59ec645d",
+                observed: "08b9161b4c67",
+                targetBasis: .savedBaseline
+            ),
+            observation: warpObserved,
+            target: ManifestTarget(observation: warpTarget),
+            enforceSourcePreflight: true
+        )
+        #expect(warpFinding.disposition == .repairable)
+        #expect(warpFinding.canRepair)
+        #expect(warpFinding.repairDisplayAction?.contains(".warp/themes") == true)
+    }
+
+    @Test
     func sourceRepairPreflightRequiresVerifiedCheckoutAtSelectedVersion() {
         let targetObservation = ComponentObservation(
             id: "authbar",
@@ -685,6 +804,118 @@ struct DoctorPlannerTests {
 }
 
 struct DoctorOrchestrationTests {
+
+    @Test
+    func managedFilesRepairRequiresExactDDBFingerprint() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fleetmesh-managed-repair-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let assets = root.appendingPathComponent("assets/codex-themes", isDirectory: true)
+        let destination = home.appendingPathComponent("CodexThemes", isDirectory: true)
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let approvedData = Data("{\"name\":\"approved\"}\n".utf8)
+        try approvedData.write(to: assets.appendingPathComponent("theme.json"))
+        try Data("old\n".utf8).write(to: destination.appendingPathComponent("old.json"))
+
+        var aggregate = Data("theme.json".utf8)
+        aggregate.append(0)
+        aggregate.append(Data(SHA256.hash(data: approvedData)))
+        let expected = SHA256.hash(data: aggregate)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let recipe = DoctorManagedFilesRecipe(
+            componentID: "codex-themes",
+            bundledDirectoryName: "codex-themes",
+            destinationHomeRelativeDirectory: "CodexThemes",
+            allowedExtensions: ["json"]
+        )
+
+        let repaired = await DoctorManagedFilesRepairer().run(
+            recipe: recipe,
+            expectedFingerprint: expected,
+            homeURL: home,
+            assetsRootURL: root.appendingPathComponent("assets", isDirectory: true)
+        )
+        #expect(repaired.exitCode == 0)
+        #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("old.json").path))
+        #expect(try Data(contentsOf: destination.appendingPathComponent("theme.json")) == approvedData)
+        #expect(repaired.standardOutputTail.contains("Backup:"))
+
+        let protectedHome = root.appendingPathComponent("protected-home", isDirectory: true)
+        let protectedDestination = protectedHome.appendingPathComponent("CodexThemes", isDirectory: true)
+        try FileManager.default.createDirectory(at: protectedDestination, withIntermediateDirectories: true)
+        let preserved = Data("preserve me\n".utf8)
+        try preserved.write(to: protectedDestination.appendingPathComponent("existing.json"))
+        let rejected = await DoctorManagedFilesRepairer().run(
+            recipe: recipe,
+            expectedFingerprint: String(repeating: "0", count: 64),
+            homeURL: protectedHome,
+            assetsRootURL: root.appendingPathComponent("assets", isDirectory: true)
+        )
+        #expect(rejected.exitCode != 0)
+        #expect(try Data(contentsOf: protectedDestination.appendingPathComponent("existing.json")) == preserved)
+    }
+
+    @Test
+    func gitRepairUsesOnlyApprovedOriginAndFastForward() async {
+        func result(_ output: String = "", exitCode: Int32 = 0) -> DoctorCommandResult {
+            DoctorCommandResult(
+                exitCode: exitCode,
+                standardOutputTail: output,
+                standardErrorTail: "",
+                timedOut: false,
+                duration: 0.01
+            )
+        }
+        let old = "34b9ad6861b80000000000000000000000000000"
+        let target = "611630839d541981727098c6b46e28e573aee59a"
+        let approvedOrigin = "git@ssh.gitlab.aws.dev:starkpat/harness-sync.git"
+        let runner = QueuedDoctorRunner(results: [
+            result(approvedOrigin),
+            result(),
+            result(),
+            result(target),
+            result(old),
+            result(),
+            result("Fast-forward"),
+            result(target),
+            result(),
+        ])
+        let recipe = DoctorGitFastForwardRecipe(
+            componentID: "harness-sync",
+            checkoutHomeRelativeDirectory: "harness-sync",
+            expectedOriginURL: approvedOrigin
+        )
+
+        let repaired = await DoctorGitFastForwardRepairer().run(
+            recipe: recipe,
+            expectedRevision: String(target.prefix(12)),
+            homeURL: URL(fileURLWithPath: "/Users/tester", isDirectory: true),
+            runner: runner
+        )
+        #expect(repaired.exitCode == 0)
+        let commands = await runner.recordedCommands()
+        #expect(commands.contains { $0.arguments.suffix(3) == ["merge", "--ff-only", target] })
+        #expect(commands.contains { $0.arguments.suffix(3) == ["fetch", "--prune", "origin"] })
+        #expect(!commands.contains { command in
+            command.arguments.contains("reset")
+                || command.arguments.contains("checkout")
+                || command.arguments.contains("clean")
+        })
+
+        let rejectedRunner = QueuedDoctorRunner(results: [result("https://example.invalid/repo.git")])
+        let rejected = await DoctorGitFastForwardRepairer().run(
+            recipe: recipe,
+            expectedRevision: String(target.prefix(12)),
+            homeURL: URL(fileURLWithPath: "/Users/tester", isDirectory: true),
+            runner: rejectedRunner
+        )
+        #expect(rejected.exitCode != 0)
+        #expect(await rejectedRunner.recordedCommands().count == 1)
+        #expect(rejected.failureSummary.contains("approved repository"))
+    }
     @Test
     func processCodexLauncherUsesStdinAndCapturesAStartedTask() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -1241,4 +1472,31 @@ private func deploymentDrift() -> ComponentDrift {
         expected: "Installed aaaaaaa",
         observed: "Source bbbbbbbbbbbb"
     )
+}
+
+private actor QueuedDoctorRunner: DoctorCommandRunning {
+    private var results: [DoctorCommandResult]
+    private var commands: [DoctorResolvedCommand] = []
+
+    init(results: [DoctorCommandResult]) {
+        self.results = results
+    }
+
+    func run(_ command: DoctorResolvedCommand) async -> DoctorCommandResult {
+        commands.append(command)
+        guard !results.isEmpty else {
+            return DoctorCommandResult(
+                exitCode: 1,
+                standardOutputTail: "",
+                standardErrorTail: "No queued result",
+                timedOut: false,
+                duration: 0
+            )
+        }
+        return results.removeFirst()
+    }
+
+    func recordedCommands() -> [DoctorResolvedCommand] {
+        commands
+    }
 }

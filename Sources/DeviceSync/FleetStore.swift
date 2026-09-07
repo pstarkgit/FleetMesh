@@ -42,6 +42,7 @@ final class FleetStore {
     private let doctorCommandRunner: any DoctorCommandRunning
     private let codexTaskLauncher: any DoctorCodexTaskLaunching
     private let doctorHomeURL: URL
+    private let doctorRepairAssetsURL: URL
     private let fleetAccess: FleetRepositoryAccess
     private let dynamoDBClientFactory: DynamoDBFleetClientFactory
 
@@ -55,6 +56,9 @@ final class FleetStore {
         doctorCommandRunner: any DoctorCommandRunning = ProcessDoctorCommandRunner(),
         codexTaskLauncher: any DoctorCodexTaskLaunching = ProcessDoctorCodexTaskLauncher(),
         doctorHomeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+        doctorRepairAssetsURL: URL = Bundle.main.resourceURL?
+            .appendingPathComponent("RepairAssets", isDirectory: true)
+            ?? URL(fileURLWithPath: "/nonexistent-fleetmesh-repair-assets", isDirectory: true),
         fleetAccess: FleetRepositoryAccess = FleetRepositoryAccess(),
         dynamoDBClientFactory: @escaping DynamoDBFleetClientFactory =
             FleetDynamoDBClientFactories.production
@@ -68,6 +72,7 @@ final class FleetStore {
         self.doctorCommandRunner = doctorCommandRunner
         self.codexTaskLauncher = codexTaskLauncher
         self.doctorHomeURL = doctorHomeURL
+        self.doctorRepairAssetsURL = doctorRepairAssetsURL
         self.fleetAccess = fleetAccess
         self.dynamoDBClientFactory = dynamoDBClientFactory
     }
@@ -1171,7 +1176,7 @@ final class FleetStore {
                 resolvedTarget: approvedTarget,
                 enforceSourcePreflight: true
             )
-            guard finding.canRepair, let recipe = finding.recipe else {
+            guard finding.canRepair else {
                 finishDoctorRun(
                     componentID: componentID,
                     componentName: drift.name,
@@ -1183,8 +1188,14 @@ final class FleetStore {
                 return
             }
 
-            guard recipe.componentID == componentID,
-                  DoctorCatalog.definition(for: componentID)?.recipe == recipe else {
+            let commandRecipe = finding.recipe
+            let managedFilesRecipe = DoctorRepairCatalog.managedFilesRecipe(for: componentID)
+            let gitRecipe = DoctorRepairCatalog.gitFastForwardRecipe(for: componentID)
+            let catalogRecipe = DoctorCatalog.definition(for: componentID)?.recipe
+            guard commandRecipe == catalogRecipe,
+                  managedFilesRecipe?.componentID == componentID || managedFilesRecipe == nil,
+                  gitRecipe?.componentID == componentID || gitRecipe == nil,
+                  commandRecipe != nil || managedFilesRecipe != nil || gitRecipe != nil else {
                 finishDoctorRun(
                     componentID: componentID,
                     componentName: drift.name,
@@ -1196,33 +1207,35 @@ final class FleetStore {
                 return
             }
 
-            let command = recipe.resolve(homeURL: doctorHomeURL)
-            guard FileManager.default.isExecutableFile(atPath: command.executableURL.path) else {
-                finishDoctorRun(
-                    componentID: componentID,
-                    componentName: drift.name,
-                    outcome: .failed,
-                    summary: "The product-owned repair entrypoint is missing or is not executable.",
-                    output: nil,
-                    startedAt: startedAt
-                )
-                return
-            }
-            if let workingDirectoryURL = command.workingDirectoryURL {
-                var isDirectory: ObjCBool = false
-                guard FileManager.default.fileExists(
-                    atPath: workingDirectoryURL.path,
-                    isDirectory: &isDirectory
-                ), isDirectory.boolValue else {
+            let command = commandRecipe?.resolve(homeURL: doctorHomeURL)
+            if let command {
+                guard FileManager.default.isExecutableFile(atPath: command.executableURL.path) else {
                     finishDoctorRun(
                         componentID: componentID,
                         componentName: drift.name,
                         outcome: .failed,
-                        summary: "The product checkout required by this repair is unavailable.",
+                        summary: "The product-owned repair entrypoint is missing or is not executable.",
                         output: nil,
                         startedAt: startedAt
                     )
                     return
+                }
+                if let workingDirectoryURL = command.workingDirectoryURL {
+                    var isDirectory: ObjCBool = false
+                    guard FileManager.default.fileExists(
+                        atPath: workingDirectoryURL.path,
+                        isDirectory: &isDirectory
+                    ), isDirectory.boolValue else {
+                        finishDoctorRun(
+                            componentID: componentID,
+                            componentName: drift.name,
+                            outcome: .failed,
+                            summary: "The product checkout required by this repair is unavailable.",
+                            output: nil,
+                            startedAt: startedAt
+                        )
+                        return
+                    }
                 }
             }
 
@@ -1251,7 +1264,7 @@ final class FleetStore {
                   DoctorApproval.matchesPinnedSource(
                     approved: preflight.component(componentID),
                     current: executionPreflight.component(componentID),
-                    requiresCleanSource: recipe.requiresCleanSource
+                    requiresCleanSource: commandRecipe?.requiresCleanSource == true || gitRecipe != nil
                   ) else {
                 finishDoctorRun(
                     componentID: componentID,
@@ -1273,7 +1286,70 @@ final class FleetStore {
                 startedAt: startedAt,
                 finishedAt: nil
             )
-            let commandResult = await doctorCommandRunner.run(command)
+
+            let commandResult: DoctorCommandResult
+            if let managedFilesRecipe {
+                guard let expectedFingerprint = approvedTarget?.baseline.expectedConfigurationFingerprint else {
+                    finishDoctorRun(
+                        componentID: componentID,
+                        componentName: drift.name,
+                        outcome: .protected,
+                        summary: "DDB does not contain an exact configuration fingerprint for this approved asset repair.",
+                        output: nil,
+                        startedAt: startedAt
+                    )
+                    return
+                }
+                commandResult = await DoctorManagedFilesRepairer().run(
+                    recipe: managedFilesRecipe,
+                    expectedFingerprint: expectedFingerprint,
+                    homeURL: doctorHomeURL,
+                    assetsRootURL: doctorRepairAssetsURL
+                )
+            } else if let gitRecipe {
+                guard let expectedRevision = approvedTarget?.baseline.expectedSourceRevision else {
+                    finishDoctorRun(
+                        componentID: componentID,
+                        componentName: drift.name,
+                        outcome: .protected,
+                        summary: "DDB does not contain an immutable source revision for this Git repair.",
+                        output: nil,
+                        startedAt: startedAt
+                    )
+                    return
+                }
+                let gitResult = await DoctorGitFastForwardRepairer().run(
+                    recipe: gitRecipe,
+                    expectedRevision: expectedRevision,
+                    homeURL: doctorHomeURL,
+                    runner: doctorCommandRunner
+                )
+                if gitResult.exitCode == 0, !gitResult.timedOut, let command {
+                    let productResult = await doctorCommandRunner.run(command)
+                    commandResult = DoctorCommandResult(
+                        exitCode: productResult.exitCode,
+                        standardOutputTail: [gitResult.combinedOutput, productResult.standardOutputTail]
+                            .compactMap { $0 }
+                            .filter { !$0.isEmpty }
+                            .joined(separator: "\n"),
+                        standardErrorTail: productResult.standardErrorTail,
+                        timedOut: productResult.timedOut,
+                        duration: gitResult.duration + productResult.duration
+                    )
+                } else {
+                    commandResult = gitResult
+                }
+            } else if let command {
+                commandResult = await doctorCommandRunner.run(command)
+            } else {
+                commandResult = DoctorCommandResult(
+                    exitCode: 1,
+                    standardOutputTail: "",
+                    standardErrorTail: "No compiled-in repair source was available.",
+                    timedOut: false,
+                    duration: 0
+                )
+            }
 
             let postflight: MachineSnapshot
             do {
@@ -1356,6 +1432,41 @@ final class FleetStore {
                 output: nil,
                 startedAt: startedAt
             )
+        }
+    }
+
+    func repairAll(componentIDs: [String], targetMachineID: String) async {
+        guard !isBusy else { return }
+        let uniqueIDs = componentIDs.reduce(into: [String]()) { result, componentID in
+            if !result.contains(componentID) { result.append(componentID) }
+        }
+        guard !uniqueIDs.isEmpty else {
+            lastActionMessage = "Fresh evidence has no approved automatic repairs to run."
+            return
+        }
+        do {
+            let state = try localRepository.loadOrCreate()
+            guard state.machineID == targetMachineID else {
+                lastError = "Fix It can run only on the Mac where FleetMesh is open."
+                return
+            }
+        } catch {
+            lastError = error.localizedDescription
+            return
+        }
+
+        for componentID in uniqueIDs {
+            await repair(componentID: componentID, targetMachineID: targetMachineID)
+        }
+        await refresh()
+
+        let completed = uniqueIDs.compactMap { doctorRuns[$0] }
+        let verified = completed.filter { $0.outcome == .repaired }.count
+        let unresolved = completed.count - verified
+        if unresolved == 0 {
+            lastActionMessage = "Fix It verified all \(verified) approved repair(s) against fresh fleet evidence."
+        } else {
+            lastActionMessage = "Fix It verified \(verified) repair(s); \(unresolved) item(s) remain protected or need attention."
         }
     }
 

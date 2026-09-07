@@ -1,0 +1,139 @@
+{
+  "name": "UOpsOS",
+  "emoji": "🤖",
+  "format": "codex-theme-bundle-v1",
+  "codex": {
+    "dark": {
+      "shareString": "codex-theme-v1:{\"codeThemeId\":\"codex\",\"theme\":{\"accent\":\"#3ec6ff\",\"contrast\":64,\"fonts\":{\"code\":null,\"ui\":null},\"ink\":\"#e5c49e\",\"opaqueWindows\":true,\"semanticColors\":{\"diffAdded\":\"#5fb1c2\",\"diffRemoved\":\"#dd998a\",\"skill\":\"#77dbf4\"},\"surface\":\"#061923\"},\"variant\":\"dark\"}",
+      "codeThemeId": "codex",
+      "theme": {
+        "accent": "#3ec6ff",
+        "contrast": 64,
+        "fonts": {
+          "code": null,
+          "ui": null
+        },
+        "ink": "#e5c49e",
+        "opaqueWindows": true,
+        "semanticColors": {
+          "diffAdded": "#5fb1c2",
+          "diffRemoved": "#dd998a",
+          "skill": "#77dbf4"
+        },
+        "surface": "#061923"
+      }
+    },
+    "light": {
+      "shareString": "codex-theme-v1:{\"codeThemeId\":\"codex\",\"theme\":{\"accent\":\"#1477B0\",\"contrast\":52,\"fonts\":{\"code\":null,\"ui\":null},\"ink\":\"#0E2E3B\",\"opaqueWindows\":true,\"semanticColors\":{\"diffAdded\":\"#2D6A73\",\"diffRemoved\":\"#B34A1F\",\"skill\":\"#2E8AA3\"},\"surface\":\"#FBF3E9\"},\"variant\":\"light\"}",
+      "codeThemeId": "codex",
+      "theme": {
+        "accent": "#1477B0",
+        "contrast": 52,
+        "fonts": {
+          "code": null,
+          "ui": null
+        },
+        "ink": "#0E2E3B",
+        "opaqueWindows": true,
+        "semanticColors": {
+          "diffAdded": "#2D6A73",
+          "diffRemoved": "#B34A1F",
+          "skill": "#2E8AA3"
+        },
+        "surface": "#FBF3E9"
+      }
+    }
+  },
+  "sourceTokens": {
+    "dark": {
+      "--bg": "#061923",
+      "--bg-accent": "#0A2430",
+      "--bg-elevated": "#0E2E3B",
+      "--bg-hover": "#12384A",
+      "--card": "#0A2430",
+      "--card-fg": "#e5c49e",
+      "--card-hl": "#103340",
+      "--panel": "#081F2A",
+      "--panel-strong": "#061923",
+      "--chrome": "#04121A",
+      "--text": "#e5c49e",
+      "--text-strong": "#ffe9d7",
+      "--muted": "#97b9c0",
+      "--muted-strong": "#c6e8f1",
+      "--border": "#1d485f",
+      "--border-strong": "#255a62",
+      "--border-hover": "#5fb1c2",
+      "--accent": "#3ec6ff",
+      "--accent-hover": "#77dbf4",
+      "--accent-subtle": "#0E3244",
+      "--accent-glow": "#3ec6ff55",
+      "--ring": "#3ec6ff",
+      "--ok": "#5fb1c2",
+      "--ok-subtle": "#103340",
+      "--warn": "#feaf3c",
+      "--warn-subtle": "#3A2A0C",
+      "--danger": "#db662d",
+      "--danger-subtle": "#3A1D10",
+      "--info": "#1f9ed6",
+      "--aim": "#77dbf4",
+      "--aim-subtle": "#0E3244",
+      "--clarify": "#97b9c0",
+      "--clarify-subtle": "#103340",
+      "--diff-add": "#103340",
+      "--diff-add-text": "#5fb1c2",
+      "--diff-del": "#3A1D10",
+      "--diff-del-text": "#dd998a",
+      "--diff-hunk": "#0E3244",
+      "--diff-hunk-text": "#77dbf4",
+      "--diff-meta-text": "#97b9c0",
+      "--shadow-sm": "0 1px 2px rgba(0,0,0,0.6)",
+      "--shadow-md": "0 4px 12px rgba(0,0,0,0.7)",
+      "--shadow-lg": "0 12px 32px rgba(0,0,0,0.8)"
+    },
+    "light": {
+      "--bg": "#FBF3E9",
+      "--bg-accent": "#F2E6D6",
+      "--bg-elevated": "#FFFFFF",
+      "--bg-hover": "#EADBC7",
+      "--card": "#FFFFFF",
+      "--card-fg": "#0E2E3B",
+      "--card-hl": "#F5EADB",
+      "--panel": "#F6ECDE",
+      "--panel-strong": "#EADBC7",
+      "--chrome": "#F2E6D6",
+      "--text": "#0E2E3B",
+      "--text-strong": "#061923",
+      "--muted": "#4D7A82",
+      "--muted-strong": "#33606B",
+      "--border": "#D8C4A6",
+      "--border-strong": "#255a62",
+      "--border-hover": "#1f9ed6",
+      "--accent": "#1477B0",
+      "--accent-hover": "#1f9ed6",
+      "--accent-subtle": "#DEEDF5",
+      "--accent-glow": "#1477B033",
+      "--ring": "#1477B0",
+      "--ok": "#3D8A99",
+      "--ok-subtle": "#DEEDF0",
+      "--warn": "#C77F14",
+      "--warn-subtle": "#F7EAD2",
+      "--danger": "#C4551F",
+      "--danger-subtle": "#F7E2D6",
+      "--info": "#1477B0",
+      "--aim": "#2E8AA3",
+      "--aim-subtle": "#DEEDF0",
+      "--clarify": "#3D6F7A",
+      "--clarify-subtle": "#E2EEF0",
+      "--diff-add": "#DEEDF0",
+      "--diff-add-text": "#2D6A73",
+      "--diff-del": "#F7E2D6",
+      "--diff-del-text": "#B34A1F",
+      "--diff-hunk": "#DEEDF5",
+      "--diff-hunk-text": "#155F8A",
+      "--diff-meta-text": "#4D7A82",
+      "--shadow-sm": "0 1px 2px rgba(20,60,80,0.12)",
+      "--shadow-md": "0 4px 12px rgba(20,60,80,0.16)",
+      "--shadow-lg": "0 12px 32px rgba(20,60,80,0.2)"
+    }
+  }
+}

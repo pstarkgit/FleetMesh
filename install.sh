@@ -123,6 +123,7 @@ mkdir -p "$STAGE_APP/Contents/MacOS" "$STAGE_APP/Contents/Resources"
 cp .build/release/DeviceSync "$STAGE_APP/Contents/MacOS/DeviceSync"
 cp Resources/Info.plist "$STAGE_APP/Contents/Info.plist"
 cp CHANGELOG.md "$STAGE_APP/Contents/Resources/CHANGELOG.md"
+cp -R Resources/RepairAssets "$STAGE_APP/Contents/Resources/RepairAssets"
 cp Resources/dev.starkpat.devicesync.snapshot.plist \
     "$STAGE_APP/Contents/Resources/dev.starkpat.devicesync.snapshot.plist"
 if [ -f Resources/AppIcon.icns ]; then

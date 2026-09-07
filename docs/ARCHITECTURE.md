@@ -47,6 +47,23 @@ A machine report never defines the baseline. A scheduled snapshot never changes
 desired state. Installing, updating, enrolling, removing, repairing, replacing a
 theme, or changing fleet defaults requires an explicit user action.
 
+Doctor treats DDB as declarative policy, never executable input. The manifest may
+select an exact configuration fingerprint or source revision, but component IDs
+are resolved only through FleetMesh's compiled-in repair catalog. Product
+commands remain hard-coded. Managed theme assets ship inside the signed app,
+are size/type/path bounded, and must reproduce DDB's full SHA-256 aggregate
+before staging. Existing theme directories move to private Doctor Backups before
+replacement, and a failed installed fingerprint restores the prior directory.
+
+Harness Sync repair validates its compiled-in GitLab origin, requires a clean
+checkout, fetches non-interactively, resolves DDB's hex revision to a commit,
+and proves the current commit is its ancestor. The only permitted worktree
+mutation is `git merge --ff-only <verified-commit>` followed by the owner
+bootstrap. No reset, checkout, clean, arbitrary URL, manifest command, or silent
+baseline change is part of Fix It. The manifest revision and observed source or
+fingerprint are pinned immediately before execution, then every repair publishes
+a fresh snapshot and counts as verified only when drift is aligned.
+
 ## Fleet model
 
 FleetMesh separates device discovery from enrollment. A report can appear before

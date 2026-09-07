@@ -1,0 +1,24 @@
+name: seashells-green
+accent: "#255a62"
+background: "#061923"
+details: darker
+foreground: "#e5c49e"
+terminal_colors:
+  bright:
+    black: "#545d65"
+    blue: "#5ee88a"
+    cyan: "#5ee88a"
+    green: "#5ee88a"
+    magenta: "#c6e8f1"
+    red: "#dd998a"
+    white: "#ffe9d7"
+    yellow: "#fedaae"
+  normal:
+    black: "#1d485f"
+    blue: "#3fd55e"
+    cyan: "#3fd55e"
+    green: "#3fd55e"
+    magenta: "#77dbf4"
+    red: "#db662d"
+    white: "#e5c49e"
+    yellow: "#feaf3c"

@@ -43,7 +43,13 @@ struct DoctorFinding: Identifiable, Hashable, Sendable {
     }
 
     var id: String { drift.componentID }
-    var canRepair: Bool { disposition == .repairable && recipe != nil }
+    var canRepair: Bool {
+        disposition == .repairable
+            && (recipe != nil || DoctorRepairCatalog.hasRepair(for: id))
+    }
+    var repairDisplayAction: String? {
+        DoctorRepairCatalog.displayAction(for: id, command: recipe)
+    }
     var needsCheckoutResolution: Bool {
         disposition == .protected && drift.state == .localChanges
     }
@@ -103,7 +109,9 @@ enum DoctorApproval {
         guard optionalRevisionsMatch(approved.sourceRevision, current.sourceRevision),
               optionalVersionsMatch(approved.sourceVersion, current.sourceVersion),
               optionalRevisionsMatch(approved.installedRevision, current.installedRevision),
-              optionalVersionsMatch(approved.installedVersion, current.installedVersion) else {
+              optionalVersionsMatch(approved.installedVersion, current.installedVersion),
+              approved.configurationFingerprint == current.configurationFingerprint,
+              approved.items == current.items else {
             return false
         }
         return true
@@ -272,13 +280,13 @@ enum DoctorCatalog {
             recipe: nil
         ),
         "codex-themes": DoctorActionDefinition(
-            title: "Review Codex theme drift",
-            detail: "Choose which named files should win. Doctor never copies or overwrites theme contents automatically.",
+            title: "Restore the approved Codex themes",
+            detail: "Validate FleetMesh's bundled theme set against the DDB fingerprint, back up the current directory, restore the approved files, and prove the result with a fresh scan.",
             recipe: nil
         ),
         "warp-themes": DoctorActionDefinition(
-            title: "Review Warp theme drift",
-            detail: "Choose which named files should win. Doctor never copies or overwrites theme contents automatically.",
+            title: "Restore the approved Warp themes",
+            detail: "Validate FleetMesh's bundled theme set against the DDB fingerprint, back up the current directory, restore the approved files, and prove the result with a fresh scan.",
             recipe: nil
         ),
         "kiro-crew-themes": DoctorActionDefinition(
@@ -376,7 +384,8 @@ struct DoctorPlanner: Sendable {
            drift.targetBasis == .savedBaseline,
            observation?.sourceDirty != true,
            (drift.kind == .configuration || drift.kind == .theme),
-           observation?.configurationFingerprint != nil {
+           observation?.configurationFingerprint != nil,
+           !DoctorRepairCatalog.hasRepair(for: drift.componentID) {
             return DoctorFinding(
                 drift: drift,
                 disposition: .manual,
@@ -399,7 +408,8 @@ struct DoctorPlanner: Sendable {
             )
         }
 
-        guard let recipe = definition?.recipe else {
+        let hasExternalRepair = DoctorRepairCatalog.hasRepair(for: drift.componentID)
+        guard definition?.recipe != nil || hasExternalRepair else {
             return DoctorFinding(
                 drift: drift,
                 disposition: .manual,
@@ -419,6 +429,16 @@ struct DoctorPlanner: Sendable {
                     disposition: .protected,
                     title: "Verify the \(drift.name) checkout before repair",
                     detail: "Doctor could not prove a clean local checkout for this source-based installer. No repair command ran.",
+                    recipe: nil
+                )
+            }
+            if DoctorRepairCatalog.gitFastForwardRecipe(for: drift.componentID) != nil,
+               target?.baseline.expectedSourceRevision == nil {
+                return DoctorFinding(
+                    drift: drift,
+                    disposition: .protected,
+                    title: "Restore the \(drift.name) source target",
+                    detail: "DDB does not contain an immutable expected source revision for this repair. No Git operation can run.",
                     recipe: nil
                 )
             }
@@ -442,7 +462,7 @@ struct DoctorPlanner: Sendable {
             disposition: .repairable,
             title: definition?.title ?? "Repair \(drift.name)",
             detail: definition?.detail ?? "Run the component-owned repair and verify the resulting installed state.",
-            recipe: recipe
+            recipe: definition?.recipe
         )
     }
 }
