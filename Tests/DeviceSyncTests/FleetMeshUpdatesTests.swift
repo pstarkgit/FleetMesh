@@ -44,7 +44,7 @@ struct FleetMeshUpdatesTests {
         )
         let entries = FleetMeshReleaseNotes.parse(markdown)
         #expect(entries.first?.version == DeviceSyncVersion.current)
-        #expect(entries.first?.version == "0.1.18")
+        #expect(entries.first?.version == "0.1.19")
     }
 
     @Test
@@ -94,24 +94,126 @@ struct FleetMeshUpdatesTests {
 
     @Test
     @MainActor
-    func updateFastForwardsBeforeLaunchingProductInstaller() async throws {
+    func updateFastForwardsBeforeRunningMonitoredProductInstaller() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("fleetmesh-updater-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let marker = root.appendingPathComponent("installer-launched")
+        try makeExecutableInstaller(at: root)
+        let logURL = root.appendingPathComponent("update.log")
         let updater = FleetMeshUpdater(
             sourceDirectory: root,
             commandRunner: UpdateRunner(mode: .available),
-            installerLauncher: { _ in
-                _ = FileManager.default.createFile(atPath: marker.path, contents: Data())
-            }
+            installerRunner: FixedInstallerRunner(result: CommandResult(
+                exitCode: 0,
+                standardOutput: "install complete",
+                standardError: "",
+                timedOut: false
+            )),
+            updateLogURL: logURL
         )
 
         await updater.installAvailableUpdate()
 
-        #expect(FileManager.default.fileExists(atPath: marker.path))
-        #expect(updater.state == .updating)
+        guard case .upToDate = updater.state else {
+            Issue.record("Expected monitored success, got \(updater.state)")
+            return
+        }
+        let log = try String(contentsOf: logURL, encoding: .utf8)
+        #expect(log.contains("exit=0"))
+        #expect(log.contains("install complete"))
+    }
+
+    @Test
+    @MainActor
+    func installerFailureLeavesUpdatingStateAndSurfacesBoundedDetail() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fleetmesh-updater-failure-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try makeExecutableInstaller(at: root)
+        let logURL = root.appendingPathComponent("update.log")
+        let detail = "Xcode path missing\n" + String(repeating: "x", count: 2_000)
+        let updater = FleetMeshUpdater(
+            sourceDirectory: root,
+            commandRunner: UpdateRunner(mode: .available),
+            installerRunner: FixedInstallerRunner(result: CommandResult(
+                exitCode: 1,
+                standardOutput: "",
+                standardError: detail,
+                timedOut: false
+            )),
+            updateLogURL: logURL
+        )
+
+        await updater.installAvailableUpdate()
+
+        guard case .failed(let message) = updater.state else {
+            Issue.record("Expected installer failure, got \(updater.state)")
+            return
+        }
+        #expect(message.contains("status 1"))
+        #expect(message.contains("update.log"))
+        #expect(message.count < 1_600)
+        #expect(!message.contains("\n"))
+        let log = try String(contentsOf: logURL, encoding: .utf8)
+        #expect(log.contains("Xcode path missing"))
+        #expect(log.contains("exit=1"))
+    }
+
+    @Test
+    @MainActor
+    func installerTimeoutBecomesFailureInsteadOfInfiniteSpinner() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fleetmesh-updater-timeout-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try makeExecutableInstaller(at: root)
+        let updater = FleetMeshUpdater(
+            sourceDirectory: root,
+            commandRunner: UpdateRunner(mode: .available),
+            installerRunner: FixedInstallerRunner(result: CommandResult(
+                exitCode: 143,
+                standardOutput: "",
+                standardError: "Installer timed out",
+                timedOut: true
+            )),
+            updateLogURL: root.appendingPathComponent("update.log")
+        )
+
+        await updater.installAvailableUpdate()
+
+        guard case .failed(let message) = updater.state else {
+            Issue.record("Expected timeout failure, got \(updater.state)")
+            return
+        }
+        #expect(message.contains("exceeded 30 minutes"))
+    }
+
+    private func makeExecutableInstaller(at root: URL) throws {
+        let installer = root.appendingPathComponent("install.sh")
+        try Data("#!/bin/bash\nexit 0\n".utf8).write(to: installer)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: installer.path
+        )
+    }
+}
+
+private actor FixedInstallerRunner: CommandRunning {
+    let result: CommandResult
+
+    init(result: CommandResult) {
+        self.result = result
+    }
+
+    func run(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String]?,
+        timeout: TimeInterval?
+    ) async -> CommandResult {
+        result
     }
 }
 

@@ -1,3 +1,21 @@
+## 0.1.19 — 2026-09-07
+
+- Removed the full-Xcode assumption from installation. FleetMesh now validates an
+  explicit `DEVELOPER_DIR`, otherwise uses a `DEVELOPER_DIR`-cleared
+  `xcode-select -p`, supporting both Xcode and Command Line Tools-only Macs.
+- Added `install.sh --print-developer-dir` diagnostics and routed release builds
+  through the selected `/usr/bin/xcrun swift` toolchain. A stale inherited
+  `DEVELOPER_DIR` warns and falls back instead of aborting before the build.
+- Replaced the updater's fire-and-forget installer launch with bounded process
+  monitoring, a 30-minute timeout, terminal success/failure state, and concise
+  captured failure detail so the UI cannot spin forever after an installer exit.
+- Made `~/Library/Logs/FleetForge/update.log` private, per-attempt, and explicit
+  in failure messages while keeping displayed detail single-line and bounded.
+- Added executable CLT selection, stale override, monitored success, nonzero
+  exit, timeout, log, and isolation regressions. FleetMesh installation remains
+  scoped to FleetMesh.app and its own snapshot LaunchAgent; Harness Sync is not
+  read, replaced, bootstrapped, or modified.
+
 ## 0.1.18 — 2026-09-06
 
 - Recovered matching application bundles from running executable paths when an

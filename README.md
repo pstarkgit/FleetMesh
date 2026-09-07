@@ -200,10 +200,13 @@ and release notes bundled from `CHANGELOG.md`. **Check again** fetches only
 fast-forward to the remote commit. Dirty or diverged checkouts are blocked
 rather than merged, reset, stashed, or overwritten.
 
-An accepted update runs `git pull --ff-only` and launches the product-owned
-`install.sh`, which rebuilds, signs, transactionally replaces, self-checks, and
-relaunches FleetMesh. Update status never changes fleet authority, desired
-state, or device evidence.
+An accepted update runs `git pull --ff-only` and starts the product-owned
+`install.sh` through FleetMesh's bounded process runner. Nonzero exit and launch
+failure immediately leave the Updating state and show a bounded single-line
+cause plus `~/Library/Logs/FleetForge/update.log`; a 30-minute timeout stops a
+hung installer. A successful installer rebuilds, signs, transactionally
+replaces, self-checks, and relaunches FleetMesh. Update status never changes
+fleet authority, desired state, or device evidence.
 
 ## Doctor
 
@@ -238,9 +241,18 @@ without separate authorization in that task.
 ## Run and test
 
 ```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run DeviceSync
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+./install.sh --print-developer-dir
 ./install.sh
+```
+
+The release installer uses a valid explicit `DEVELOPER_DIR` or auto-detects the
+active Xcode/Command Line Tools path through `xcode-select -p`. A Command Line
+Tools-only Mac can build and install FleetMesh. The Swift Testing framework used
+by the repository's test target requires the full Xcode toolchain, so maintainers
+run tests with:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
 Headless verification:
