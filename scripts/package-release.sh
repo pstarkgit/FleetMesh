@@ -24,14 +24,15 @@ mkdir -p "$DIST"
 trap 'rm -rf "$DIST"' ERR
 
 IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
-case "$IDENTITIES" in *"$DEVID"*) ;; *) echo "ERROR: Developer ID identity is unavailable" >&2; exit 1 ;; esac
+DEVID_HASH="$(printf '%s\n' "$IDENTITIES" | awk -v identity="$DEVID" 'index($0, identity) { print $2; exit }')"
+[ -n "$DEVID_HASH" ] || { echo "ERROR: Developer ID identity is unavailable" >&2; exit 1; }
 xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 || {
     echo "ERROR: notarytool profile '$NOTARY_PROFILE' is unavailable" >&2
     exit 1
 }
 
 ./install.sh --build-app "$APP"
-/usr/bin/codesign --force --deep --options runtime --timestamp --sign "$DEVID" "$APP"
+/usr/bin/codesign --force --deep --options runtime --timestamp --sign "$DEVID_HASH" "$APP"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
 SIGINFO="$(/usr/bin/codesign -dv --verbose=4 "$APP" 2>&1 || true)"
 case "$SIGINFO" in *"Authority=$DEVID"*) ;; *) echo "ERROR: Developer ID authority missing" >&2; exit 1 ;; esac
