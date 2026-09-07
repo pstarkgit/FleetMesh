@@ -78,6 +78,21 @@ enrolled controller can mutate the manifest to approve membership and role. An
 invitation can never create or replace a baseline, enroll its recipient, or run
 Bootstrap or Doctor actions.
 
+#### Moving between fleets
+
+A different valid invitation produces an explicit move operation, never a
+silent authority replacement. FleetMesh constructs an independent destination
+backend and requires a live readable manifest before mutating either local or
+old-fleet state. It then conditionally marks the local machine Removed in the
+old manifest, persists destination selectors while preserving machine identity
+and private state, and publishes a newly captured redacted report as Pending.
+
+Destination preflight and old-manifest conflict failures leave the current
+fleet unchanged. If destination publication fails after old-fleet departure,
+the destination remains configured so Refresh can safely retry; FleetMesh
+states that departure already succeeded. Private fallback caches are separated
+by fleet ID and can never veto an authoritative DynamoDB write.
+
 Applicability is evaluated before drift. A Mac-only target inherited by a Linux
 server is not a failure; it is not applicable. A missing required shell/config
 target on that Linux server is drift.
@@ -97,6 +112,20 @@ creation. Only **Quit FleetMesh** terminates the process.
 The command center is anchored by a named native `NSStatusItem`. FleetMesh
 seeds only its own initial placement preference and preserves later user
 placement; it never rearranges another app's menu-bar item.
+
+### Updates and release notes
+
+The installed bundle includes the same `CHANGELOG.md` whose first entry gates
+installation, so What's New remains available without a source checkout. A
+signed install also records its source checkout path and commit. Update checks
+fetch `origin/main` only from that checkout and require an empty worktree plus
+fast-forward ancestry. Dirty, local-ahead, and diverged trees are never merged,
+stashed, reset, or overwritten.
+
+An explicit Update action performs `git pull --ff-only` and launches the
+hard-coded product `install.sh`. The installer owns rebuilding, signing,
+transactional bundle replacement, self-check, and relaunch. Updater state and
+release notes are local product metadata and never enter the fleet protocol.
 
 ## Managed product boundaries
 

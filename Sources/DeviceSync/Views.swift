@@ -28,6 +28,8 @@ struct RootView: View {
                     DoctorView(store: store)
                 case .bootstrap:
                     BootstrapView(store: store)
+                case .updates:
+                    FleetMeshUpdatesView(updater: appState.updater)
                 case .settings:
                     SettingsView(store: store, appearance: appearance)
                 }

@@ -213,7 +213,7 @@ struct LocalStateRepository: Sendable {
         return state
     }
 
-    func applyingEnrollmentInvitation(
+    func preparingEnrollmentInvitation(
         _ invitation: FleetEnrollmentInvitation,
         profile: String,
         displayName: String?
@@ -227,10 +227,24 @@ struct LocalStateRepository: Sendable {
         state.fleetID = invitation.fleetID
         state.cachePath = stateURL.deletingLastPathComponent()
             .appendingPathComponent("dynamodb-cache", isDirectory: true)
+            .appendingPathComponent(invitation.fleetID, isDirectory: true)
             .path
         let normalizedName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
         state.displayName = normalizedName?.isEmpty == false ? normalizedName : state.displayName
         _ = try state.dynamoDBConfiguration()
+        return state
+    }
+
+    func applyingEnrollmentInvitation(
+        _ invitation: FleetEnrollmentInvitation,
+        profile: String,
+        displayName: String?
+    ) throws -> LocalDeviceState {
+        let state = try preparingEnrollmentInvitation(
+            invitation,
+            profile: profile,
+            displayName: displayName
+        )
         try save(state)
         return state
     }

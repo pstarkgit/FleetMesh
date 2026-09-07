@@ -172,6 +172,27 @@ Creating a new fleet requires the explicit baseline action; migration and
 cutover require the explicit `--migrate-dynamodb` command and optional
 `--cutover` flag.
 
+If the Mac already belongs to another fleet, importing a different invitation
+shows **Move this Mac** instead of overwriting local state. FleetMesh first
+verifies the destination, then asks for explicit confirmation, marks the Mac
+Removed in the old fleet with a conditional policy write, switches authority,
+and publishes Pending evidence to the destination. A destination or departure
+failure leaves the old fleet unchanged. A same-fleet invitation is a no-op.
+
+## Updates & What's New
+
+The **Updates** destination always shows the installed version, build commit,
+and release notes bundled from `CHANGELOG.md`. **Check again** fetches only
+`origin/main` from the signed build's attached source checkout. FleetMesh offers
+**Update now** only when the checkout is clean and its current commit can
+fast-forward to the remote commit. Dirty or diverged checkouts are blocked
+rather than merged, reset, stashed, or overwritten.
+
+An accepted update runs `git pull --ff-only` and launches the product-owned
+`install.sh`, which rebuilds, signs, transactionally replaces, self-checks, and
+relaunches FleetMesh. Update status never changes fleet authority, desired
+state, or device evidence.
+
 ## Doctor
 
 Doctor is a local repair safety gate, not an autonomous fleet mutator. A repair

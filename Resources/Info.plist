@@ -65,6 +65,8 @@
             <string>Viewer</string>
         </dict>
     </array>
+    <key>DSSourceDir</key>
+    <string></string>
     <key>DSCommit</key>
     <string></string>
     <key>DSBuildDate</key>

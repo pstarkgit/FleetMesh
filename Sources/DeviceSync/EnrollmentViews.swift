@@ -106,6 +106,7 @@ struct FleetEnrollmentWizardView: View {
     @State private var profile = FleetEnrollmentInvitation.defaultReporterProfileHint
     @State private var machineName = ""
     @State private var isImporting = false
+    @State private var confirmMove = false
     @State private var importError: String?
 
     var body: some View {
@@ -142,6 +143,25 @@ struct FleetEnrollmentWizardView: View {
             allowsMultipleSelection: false
         ) { result in
             importInvitation(result)
+        }
+        .confirmationDialog(
+            moveConfirmationTitle,
+            isPresented: $confirmMove,
+            titleVisibility: .visible
+        ) {
+            Button("Move this Mac") {
+                guard let invitation else { return }
+                Task {
+                    await store.moveToEnrollmentInvitation(
+                        invitation,
+                        profile: profile,
+                        displayName: machineName
+                    )
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(moveConfirmationDetail)
         }
         .onAppear {
             if machineName.isEmpty {
@@ -204,6 +224,23 @@ struct FleetEnrollmentWizardView: View {
             .background(DSTheme.canvas)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
+            switch store.enrollmentTransition(for: invitation) {
+            case .join:
+                EmptyView()
+            case .move(let currentFleetID, let destinationFleetID):
+                enrollmentNotice(
+                    "This Mac currently belongs to fleet \(currentFleetID). FleetMesh will verify \(destinationFleetID), remove this Mac from the old fleet, then publish it as Pending to the new fleet.",
+                    color: DSTheme.orange,
+                    symbol: "arrow.triangle.swap"
+                )
+            case .alreadyConnected:
+                enrollmentNotice(
+                    "This invitation points to the fleet this Mac already uses. Nothing needs to move.",
+                    color: DSTheme.blue,
+                    symbol: "checkmark.circle.fill"
+                )
+            }
+
             Form {
                 TextField("Reporter profile", text: $profile)
                     .textContentType(.username)
@@ -228,24 +265,64 @@ struct FleetEnrollmentWizardView: View {
                     ProgressView().controlSize(.small)
                 }
                 Button {
-                    Task {
-                        await store.applyEnrollmentInvitation(
-                            invitation,
-                            profile: profile,
-                            displayName: machineName
-                        )
+                    switch store.enrollmentTransition(for: invitation) {
+                    case .join:
+                        Task {
+                            await store.applyEnrollmentInvitation(
+                                invitation,
+                                profile: profile,
+                                displayName: machineName
+                            )
+                        }
+                    case .move:
+                        confirmMove = true
+                    case .alreadyConnected:
+                        break
                     }
                 } label: {
-                    Label("Connect this Mac", systemImage: "link.badge.plus")
+                    Label(primaryActionLabel(for: invitation), systemImage: primaryActionSymbol(for: invitation))
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(
                     store.isBusy
+                        || store.enrollmentTransition(for: invitation) == .alreadyConnected
                         || profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || machineName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 )
             }
         }
+    }
+
+    private func primaryActionLabel(for invitation: FleetEnrollmentInvitation) -> String {
+        switch store.enrollmentTransition(for: invitation) {
+        case .join: "Connect this Mac"
+        case .move: "Move this Mac"
+        case .alreadyConnected: "Already connected"
+        }
+    }
+
+    private func primaryActionSymbol(for invitation: FleetEnrollmentInvitation) -> String {
+        switch store.enrollmentTransition(for: invitation) {
+        case .join: "link.badge.plus"
+        case .move: "arrow.triangle.swap"
+        case .alreadyConnected: "checkmark.circle.fill"
+        }
+    }
+
+    private var moveConfirmationTitle: String {
+        guard let invitation,
+              case .move(_, let destinationFleetID) = store.enrollmentTransition(
+                for: invitation
+              ) else { return "Move this Mac to a new fleet?" }
+        return "Move this Mac to fleet \(destinationFleetID)?"
+    }
+
+    private var moveConfirmationDetail: String {
+        guard let invitation,
+              case .move(let currentFleetID, let destinationFleetID) = store.enrollmentTransition(
+                for: invitation
+              ) else { return "FleetMesh will not change anything without a valid destination." }
+        return "FleetMesh will first verify fleet \(destinationFleetID) without changing local authority. It will then mark this Mac Removed from fleet \(currentFleetID), switch authority, and publish Pending evidence. If destination verification or old-fleet departure fails, this Mac stays in its current fleet."
     }
 
     private var successContent: some View {
@@ -261,9 +338,9 @@ struct FleetEnrollmentWizardView: View {
                 symbol: "person.badge.clock.fill"
             )
             VStack(alignment: .leading, spacing: 7) {
-                Label("Unique machine identity created locally", systemImage: "checkmark.circle")
-                Label("DynamoDB authority verified", systemImage: "checkmark.circle")
-                Label("No baseline or fleet membership changed", systemImage: "checkmark.circle")
+                Label("Unique machine identity preserved locally", systemImage: "checkmark.circle")
+                Label("Destination DynamoDB authority verified", systemImage: "checkmark.circle")
+                Label("Destination membership remains Pending", systemImage: "checkmark.circle")
             }
             .font(.subheadline)
             .foregroundStyle(DSTheme.inkSoft)
