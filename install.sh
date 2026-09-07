@@ -35,6 +35,7 @@ BACKUP_FINAL_APP="$STAGE_ROOT/FleetMesh.app.previous"
 BACKUP_FORMER_APP="$STAGE_ROOT/FleetForge.app.previous"
 BACKUP_LEGACY_APP="$STAGE_ROOT/Device Sync.app.previous"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
+SOURCE_DIR="$(pwd -P)"
 BUILD_DATE="$(date '+%Y-%m-%d %H:%M')"
 
 cleanup() {
@@ -95,6 +96,7 @@ fi
 /usr/libexec/PlistBuddy \
     -c "Set :CFBundleShortVersionString $VERSION" \
     -c "Set :CFBundleVersion $VERSION" \
+    -c "Set :DSSourceDir $SOURCE_DIR" \
     -c "Set :DSCommit $COMMIT" \
     -c "Set :DSBuildDate $BUILD_DATE" \
     "$STAGE_APP/Contents/Info.plist"

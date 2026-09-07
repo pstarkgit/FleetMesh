@@ -82,6 +82,17 @@ struct MenuBarSummaryTests {
     }
 
     @Test
+    @MainActor
+    func sharedNavigationCanRouteToUpdates() {
+        let navigation = AppNavigation()
+
+        navigation.open(.updates)
+
+        #expect(navigation.section == .updates)
+        #expect(AppSection.updates.symbol == "arrow.down.circle")
+    }
+
+    @Test
     func statusItemPlacementSeedsOnlyItsOwnUnsetSlot() throws {
         #expect(DeviceSyncStatusItemPlacement.autosaveName == "DeviceSync")
         let suiteName = "dev.starkpat.devicesync.tests.\(UUID().uuidString)"

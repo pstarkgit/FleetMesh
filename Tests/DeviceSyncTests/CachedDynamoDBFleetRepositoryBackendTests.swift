@@ -31,6 +31,31 @@ struct CachedDynamoDBFleetRepositoryBackendTests {
         #expect(fallback.manifest?.revision == manifest.revision)
         #expect(fallback.issues.contains { $0.id == "dynamodb-cache-fallback" })
     }
+
+    @Test
+    func authoritativeWriteSucceedsWhenPrivateCacheWriteFails() async throws {
+        let client = InMemoryDynamoDBFleetClient()
+        let authority = DynamoDBFleetRepository(fleetID: "primary", client: client)
+        let snapshot = cachedSnapshot()
+        let original = FleetManifest(snapshot: snapshot)
+        _ = try await authority.replaceBaseline(original, snapshot: snapshot)
+        let backend = CachedDynamoDBFleetRepositoryBackend(
+            authority: authority,
+            cache: UnavailableFleetRepositoryBackend()
+        )
+        let updated = FleetManifest(
+            snapshot: snapshot,
+            updatedAt: original.updatedAt.addingTimeInterval(1)
+        )
+
+        let read = try await backend.save(
+            updated,
+            replacingRevision: original.revision
+        )
+
+        #expect(read.manifest?.revision == updated.revision)
+        #expect((await authority.loadManifest()).manifest?.revision == updated.revision)
+    }
 }
 
 private actor UnavailableFleetRepositoryBackend: FleetRepositoryProtocol {

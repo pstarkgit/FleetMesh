@@ -158,6 +158,33 @@ final class FleetStore {
         manifest != nil && localState?.effectiveStorageBackend == .dynamodb
     }
 
+    func enrollmentTransition(
+        for invitation: FleetEnrollmentInvitation
+    ) -> FleetEnrollmentTransition {
+        let currentFleetID = localState?.fleetID ?? "current fleet"
+        guard let state = localState,
+              let current = try? state.dynamoDBConfiguration() else {
+            return manifest != nil && localDevice?.status == .enrolled
+                ? .move(
+                    currentFleetID: currentFleetID,
+                    destinationFleetID: invitation.fleetID
+                )
+                : .join
+        }
+        if current.region == invitation.region,
+           current.table == invitation.table,
+           current.fleetID == invitation.fleetID {
+            return .alreadyConnected
+        }
+        if manifest != nil, localDevice?.status == .enrolled {
+            return .move(
+                currentFleetID: current.fleetID,
+                destinationFleetID: invitation.fleetID
+            )
+        }
+        return .join
+    }
+
     var enrolledDevices: [FleetDeviceItem] {
         devices.filter { $0.status == .enrolled }
     }
@@ -450,6 +477,133 @@ final class FleetStore {
             throw FleetStoreError.enrollmentInvitationUnavailable
         }
         return try FleetEnrollmentInvitation.make(from: localState)
+    }
+
+    func moveToEnrollmentInvitation(
+        _ invitation: FleetEnrollmentInvitation,
+        profile: String,
+        displayName: String?
+    ) async {
+        guard !isBusy else { return }
+        guard case .move(let currentFleetID, let destinationFleetID) = enrollmentTransition(
+            for: invitation
+        ) else {
+            lastError = FleetStoreError.sameFleetInvitation.localizedDescription
+            lastActionMessage = nil
+            return
+        }
+
+        isUpdatingScope = true
+        lastError = nil
+        lastActionMessage = nil
+        var switchedAuthority = false
+        do {
+            let candidateState = try await preflightEnrollmentDestination(
+                invitation,
+                profile: profile,
+                displayName: displayName
+            )
+            guard let displayedManifest = manifest,
+                  let currentSnapshot = localSnapshot,
+                  let currentDevice = localDevice,
+                  let fleetRootURL else {
+                throw FleetStoreError.currentFleetDepartureUnavailable
+            }
+            let currentState = try localRepository.loadOrCreate()
+            let updatedOldManifest = try displayedManifest.settingDeviceEnrollment(
+                snapshot: currentSnapshot,
+                enrolled: false,
+                role: currentDevice.role,
+                knownSnapshots: Array(knownSnapshots.values),
+                updatedByMachineID: currentState.machineID
+            )
+            let departedRead = try await fleetAccess.save(
+                updatedOldManifest,
+                replacingRevision: displayedManifest.revision,
+                rootURL: fleetRootURL
+            )
+            apply(read: departedRead, currentSnapshot: currentSnapshot)
+
+            do {
+                try localRepository.save(candidateState)
+                localState = candidateState
+                switchedAuthority = true
+            } catch {
+                do {
+                    guard let departedManifest = departedRead.manifest else { throw error }
+                    let restoredManifest = try departedManifest.settingDeviceEnrollment(
+                        snapshot: currentSnapshot,
+                        enrolled: true,
+                        role: currentDevice.role,
+                        knownSnapshots: Array(knownSnapshots.values),
+                        updatedByMachineID: currentState.machineID
+                    )
+                    let restoredRead = try await fleetAccess.save(
+                        restoredManifest,
+                        replacingRevision: departedManifest.revision,
+                        rootURL: fleetRootURL
+                    )
+                    apply(read: restoredRead, currentSnapshot: currentSnapshot)
+                    throw FleetStoreError.localFleetMoveFailed(error.localizedDescription)
+                } catch let rollbackError as FleetStoreError {
+                    throw rollbackError
+                } catch let rollbackError {
+                    throw FleetStoreError.fleetMoveRollbackFailed(
+                        change: error.localizedDescription,
+                        rollback: rollbackError.localizedDescription
+                    )
+                }
+            }
+
+            isUpdatingScope = false
+            await refresh()
+            if lastError == nil, manifest != nil, localDevice?.status == .pending {
+                lastActionMessage = "This Mac left fleet \(currentFleetID), connected to \(destinationFleetID), and published Pending evidence. Approve it from the new fleet's controller."
+            } else if let destinationError = lastError {
+                lastError = "This Mac left fleet \(currentFleetID) and switched to \(destinationFleetID), but destination publication failed: \(destinationError) Fix access and retry Refresh."
+            }
+        } catch {
+            isUpdatingScope = false
+            lastError = error.localizedDescription
+            lastActionMessage = nil
+            if !switchedAuthority {
+                await reloadFleet()
+            }
+        }
+    }
+
+    private func preflightEnrollmentDestination(
+        _ invitation: FleetEnrollmentInvitation,
+        profile: String,
+        displayName: String?
+    ) async throws -> LocalDeviceState {
+        if case .alreadyConnected = enrollmentTransition(for: invitation) {
+            throw FleetStoreError.sameFleetInvitation
+        }
+        let candidateState = try localRepository.preparingEnrollmentInvitation(
+            invitation,
+            profile: profile,
+            displayName: displayName
+        )
+        let rootURL = URL(
+            fileURLWithPath: candidateState.fleetRootPath,
+            isDirectory: true
+        )
+        let destination = try await FleetRepositoryBackendBuilder.make(
+            state: candidateState,
+            rootURL: rootURL,
+            makeDynamoDBClient: dynamoDBClientFactory
+        )
+        let read = await destination.loadManifest()
+        if let issue = read.issue {
+            throw FleetStoreError.destinationFleetUnavailable(issue.detail)
+        }
+        guard read.manifest != nil else {
+            throw FleetStoreError.destinationFleetUnavailable(
+                "No readable destination manifest exists."
+            )
+        }
+        return candidateState
     }
 
     func applyEnrollmentInvitation(
@@ -1432,6 +1586,11 @@ private enum FleetStoreError: LocalizedError {
     case freshObservationUnavailable(String)
     case enrollmentInvitationUnavailable
     case alreadyConnectedToFleet
+    case sameFleetInvitation
+    case currentFleetDepartureUnavailable
+    case destinationFleetUnavailable(String)
+    case localFleetMoveFailed(String)
+    case fleetMoveRollbackFailed(change: String, rollback: String)
 
     var errorDescription: String? {
         switch self {
@@ -1456,7 +1615,17 @@ private enum FleetStoreError: LocalizedError {
         case .enrollmentInvitationUnavailable:
             "Connect and verify DynamoDB authority before creating a new Mac invitation."
         case .alreadyConnectedToFleet:
-            "This Mac is already enrolled in a fleet. FleetMesh did not replace its authority or identity."
+            "This Mac is already enrolled in a fleet. Choose Move this Mac to leave it before joining another fleet."
+        case .sameFleetInvitation:
+            "This invitation points to the fleet this Mac already uses. No changes were made."
+        case .currentFleetDepartureUnavailable:
+            "FleetMesh could not prove this Mac can leave its current fleet. No authority or enrollment changed."
+        case .destinationFleetUnavailable(let detail):
+            "FleetMesh could not verify the destination fleet (\(detail)). This Mac remains in its current fleet."
+        case .localFleetMoveFailed(let detail):
+            "FleetMesh could not save the destination locally (\(detail)). The old fleet enrollment was restored."
+        case .fleetMoveRollbackFailed(let change, let rollback):
+            "The local fleet switch failed (\(change)), and FleetMesh could not restore old fleet enrollment (\(rollback)). Stop and reconcile both controllers before retrying."
         }
     }
 }

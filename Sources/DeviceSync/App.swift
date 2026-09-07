@@ -40,6 +40,10 @@ struct DeviceSyncApp: App {
                     Task { await appState.store.refresh() }
                 }
                 .keyboardShortcut("r", modifiers: .command)
+                Button("Check for Updates…") {
+                    appState.show(.updates)
+                    Task { await appState.updater.check() }
+                }
             }
         }
     }
@@ -336,6 +340,7 @@ final class DeviceSyncAppState {
     let store: FleetStore
     let navigation: AppNavigation
     let appearance: FleetMeshAppearanceStore
+    let updater: FleetMeshUpdater
     private(set) var pendingEnrollmentInvitationURL: URL? = nil
 
     private var statusItemController: DeviceSyncStatusItemController?
@@ -345,6 +350,7 @@ final class DeviceSyncAppState {
         store = FleetStore()
         navigation = AppNavigation()
         appearance = FleetMeshAppearanceStore.shared
+        updater = FleetMeshUpdater()
     }
 
     func installStatusItem() {

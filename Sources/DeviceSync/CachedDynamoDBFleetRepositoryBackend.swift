@@ -53,13 +53,13 @@ actor CachedDynamoDBFleetRepositoryBackend: FleetRepositoryProtocol {
         snapshot: MachineSnapshot
     ) async throws -> FleetReadResult {
         let read = try await authority.replaceBaseline(manifest, snapshot: snapshot)
-        _ = try await cache.replaceBaseline(manifest, snapshot: snapshot)
+        _ = try? await cache.replaceBaseline(manifest, snapshot: snapshot)
         return read
     }
 
     func publish(_ snapshot: MachineSnapshot) async throws -> FleetReadResult {
         let read = try await authority.publish(snapshot)
-        _ = try await cache.publish(snapshot)
+        _ = try? await cache.publish(snapshot)
         return read
     }
 
@@ -73,7 +73,7 @@ actor CachedDynamoDBFleetRepositoryBackend: FleetRepositoryProtocol {
             manifest: manifest,
             replacingRevision: replacingRevision
         )
-        _ = try await cache.publishAndSave(
+        _ = try? await cache.publishAndSave(
             snapshot,
             manifest: manifest,
             replacingRevision: replacingRevision
@@ -89,7 +89,7 @@ actor CachedDynamoDBFleetRepositoryBackend: FleetRepositoryProtocol {
             manifest,
             replacingRevision: replacingRevision
         )
-        _ = try await cache.save(
+        _ = try? await cache.save(
             manifest,
             replacingRevision: replacingRevision
         )

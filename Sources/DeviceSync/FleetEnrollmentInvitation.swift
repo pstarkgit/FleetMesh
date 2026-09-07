@@ -9,6 +9,12 @@ extension UTType {
     )
 }
 
+enum FleetEnrollmentTransition: Equatable, Sendable {
+    case join
+    case move(currentFleetID: String, destinationFleetID: String)
+    case alreadyConnected
+}
+
 struct FleetEnrollmentInvitation: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
     static let defaultReporterProfileHint = "fleetmesh-reporter"

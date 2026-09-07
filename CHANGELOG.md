@@ -1,3 +1,25 @@
+## 0.1.17 — 2026-09-06
+
+- Added an explicit **Move this Mac** path when an invitation targets a different
+  fleet instead of returning an already-connected error.
+- Made moves fail closed: FleetMesh validates the destination manifest with its
+  temporary reporter role before changing local authority, then conditionally
+  marks the Mac Removed in the old fleet, switches selectors atomically, and
+  publishes fresh redacted evidence as Pending to the destination.
+- Preserved local machine identity and private state across moves, isolated JSON
+  fallback caches by fleet ID, and made same-fleet invitations a no-op.
+- Added clear recovery semantics. Destination-preflight or old-fleet conflict
+  failures leave the current fleet unchanged; if destination publication fails
+  after departure, FleetMesh keeps the destination configured for safe retry
+  and reports that the old departure already succeeded.
+- Made private cache writes best-effort after authoritative DynamoDB writes so a
+  stale or missing cache cannot turn a successful policy change into a false
+  failure.
+- Added a native **Updates & What's New** destination with bundled human-readable
+  release notes, build identity, standard app-menu check, and a guarded updater.
+  Updates require a clean attached checkout, verified fast-forward ancestry, and
+  the product-owned installer; FleetMesh refuses dirty or diverged source.
+
 ## 0.1.16 — 2026-09-06
 
 - Added controller-side export of a credential-free `.fleetmesh` invitation for
